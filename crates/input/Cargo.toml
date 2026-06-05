@@ -1,0 +1,11 @@
+[package]
+name = "input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crossterm.workspace = true
+anyhow.workspace = true
+
+app.workspace = true
+buffer.workspace = true

@@ -1,0 +1,77 @@
+[package]
+name = "stic"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "stic"
+path = "src/main.rs"
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/editor",
+    "crates/ui",
+    "crates/command_palette",
+    "crates/input",
+    "crates/config",
+    "crates/buffer",
+    "crates/app"
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Terminal UI
+ratatui = { version = "0.30.0", features = ["crossterm"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+
+# Text storage (rope for large files)
+ropey = "1.6.1"
+
+# Syntax highlighting
+syntect = { version = "5.3.0", default-features = false, features = ["parsing", "regex-fancy", "default-syntaxes", "default-themes", "plist-load", "yaml-load"] }
+
+# Config / serialisation
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "0.8.23"
+
+# LSP types (types only – no runtime yet; add tower-lsp later for full LSP)
+lsp-types = "0.97.0"
+
+# Async (needed for LSP process spawning in the future)
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+
+# Utilities
+anyhow = "1.0.102"
+dirs = "6.0.0"
+unicode-width = "0.2.2"
+log = "0.4.32"
+env_logger = "0.11.10"
+
+app = { path = "crates/app" }
+buffer = { path = "crates/buffer" }
+command_palette = { path = "crates/command_palette" }
+config = { path = "crates/config" }
+editor = { path = "crates/editor" }
+input = { path = "crates/input" }
+ui = { path = "crates/ui" }
+
+[dependencies]
+anyhow.workspace = true
+crossterm.workspace = true
+env_logger.workspace = true
+log.workspace = true
+ratatui.workspace = true
+tokio.workspace = true
+
+app.workspace = true
+buffer.workspace = true
+command_palette.workspace = true
+config.workspace = true
+editor.workspace = true
+input.workspace = true
+ui.workspace = true

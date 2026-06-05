@@ -1,0 +1,11 @@
+[package]
+name = "buffer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ropey.workspace = true
+unicode-width.workspace = true
+anyhow.workspace = true
+
+config.workspace = true

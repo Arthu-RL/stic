@@ -1,0 +1,12 @@
+[package]
+name = "editor"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace  = true
+syntect.workspace = true
+ratatui.workspace = true
+
+config.workspace = true
+buffer.workspace = true

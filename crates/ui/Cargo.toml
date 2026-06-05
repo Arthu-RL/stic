@@ -1,0 +1,14 @@
+[package]
+name = "ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ratatui.workspace = true
+unicode-width.workspace = true
+
+app.workspace = true
+buffer.workspace = true
+editor.workspace = true
+command_palette.workspace = true
+config.workspace = true

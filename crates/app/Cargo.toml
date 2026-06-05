@@ -1,0 +1,11 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+config.workspace = true
+editor.workspace = true
+buffer.workspace = true
+command_palette.workspace = true
