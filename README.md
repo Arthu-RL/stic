@@ -1,8 +1,26 @@
 # Stic – Simple Terminal Integrated Code Editor
 
-A blazingly fast, modern, and cross-platform terminal editor built with [Ratatui](https://ratatui.rs) and powered by [ropey](https://github.com/cwalton/ropey) for seamless, O(log N) text manipulation—even on multi-megabyte files.
+A blazingly fast, modern, and cross-platform terminal editor built with **Ratatui** and powered by a **rope data structure** for seamless, *O(log N)* text manipulation—even on multi-megabyte files.
 
 Whether you are making quick edits over SSH or settling in for a long coding session, Stic combines the speed of terminal applications with the modern features of heavy GUI editors.
+
+## Technologies & Dependencies Included
+
+The Stic ecosystem leverages the following open-source libraries and runtimes to deliver high-performance modal editing:
+
+* **[Ratatui](https://github.com/ratatui/ratatui)** (MIT License) — Core Terminal User Interface (TUI) framing engine handling components, layouts, and display buffer cells.
+* **[ropey](https://github.com/cwalton/ropey)** (MIT License) — Heavy-duty, immutable rope data structure managing steady *O(log N)* text mutation performance on multi-megabyte files.
+* **[Crossterm](https://github.com/crossterm-rs/crossterm)** (MIT License) — Cross-platform terminal manipulation backend handling raw modes, terminal commands, and system key/mouse input processing.
+* **[syntect](https://github.com/trishume/syntect)** (MIT License) — High-fidelity syntax highlighting pipeline leveraging Sublime Text `.sublime-syntax` definitions and text themes.
+* **[Tokio](https://github.com/tokio-rs/tokio)** (MIT License) — Asynchronous engine runtime orchestrating non-blocking system tasks, file operations, and multi-threaded processing.
+* **[Serde](https://github.com/serde-rs/serde)** (MIT License / Apache 2.0) — Generic data serialization and deserialization framework used to map settings records into memory structures.
+* **[toml-rs](https://github.com/toml-rs/toml-rs)** (MIT License / Apache 2.0) — Zero-allocation TOML file decoding parser explicitly matching local configuration profiles.
+* **[lsp-types](https://github.com/gluon-lang/lsp-types)** (MIT License) — Full implementation types matching the structural communication contracts outlined by the Microsoft Language Server Protocol spec.
+* **[Anyhow](https://github.com/dtolnay/anyhow)** (MIT License / Apache 2.0) — Idiomatic, dynamic error reporting utility facilitating error propagation safely across workspace dependencies.
+* **[dirs-rs](https://github.com/dirs-dev/dirs-rs)** (MIT License / Apache 2.0) — Platform-agnostic directory utility locating base configuration layouts across Linux, macOS, and Windows environments.
+* **[unicode-width](https://github.com/unicode-rs/unicode-width)** (MIT License / Apache 2.0) — Explicit character metric calculator computing exact UI terminal cell grids for multi-byte or variable width Unicode representations.
+
+---
 
 ## Why Stic?
 
