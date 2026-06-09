@@ -37,7 +37,7 @@ impl FileTreeState {
     ///
     /// A localized `FileTreeState` initialized with discovered child directory elements.
     pub fn from_dir(root: &Path) -> Self {
-        let entries = walk_dir(root, 0, 3);
+        let entries: Vec<(usize, String, std::path::PathBuf)> = walk_dir(root, 0, 3);
         Self { entries, selected: 0, root: root.to_path_buf() }
     }
 
@@ -79,17 +79,16 @@ impl FileTreeState {
 /// A flattened sequence containing depth counters, customized presentation names, and system paths.
 fn walk_dir(dir: &Path, depth: usize, max_depth: usize) -> Vec<(usize, String, std::path::PathBuf)> {
     if depth > max_depth { return vec![]; }
-    let mut out = vec![];
+    let mut out: Vec<(usize, String, std::path::PathBuf)> = vec![];
     let Ok(rd) = std::fs::read_dir(dir) else { return out; };
     let mut entries: Vec<_> = rd.flatten().collect();
-    entries.sort_by_key(|e| {
-        let is_file = e.file_type().map(|t| t.is_file()).unwrap_or(true);
+    entries.sort_by_key(|e: &std::fs::DirEntry| {
+        let is_file: bool = e.file_type().map(|t| t.is_file()).unwrap_or(true);
         (is_file as u8, e.file_name())
     });
     for e in entries {
         let path = e.path();
         let name = e.file_name().to_string_lossy().into_owned();
-        if name.starts_with('.') || name == "target" { continue; }
         let prefix = if path.is_dir() { format!("{}", name) } else { format!("  {}", name) };
         out.push((depth, prefix, path.clone()));
         if path.is_dir() {
@@ -137,13 +136,13 @@ impl App {
     ///
     /// An operational, top-level `App` engine wrapper block.
     pub fn new() -> Self {
-        let config = Config::load();
-        let editor = Editor::new(config.clone());
-        let show_ft   = config.ui.show_file_tree;
-        let show_term = config.ui.show_terminal;
-        let show_diag = config.ui.show_diagnostics;
+        let config: Config = Config::load();
+        let editor: Editor = Editor::new(config.clone());
+        let show_ft: bool   = config.ui.show_file_tree;
+        let show_term: bool = config.ui.show_terminal;
+        let show_diag: bool = config.ui.show_diagnostics;
 
-        let file_tree = if show_ft {
+        let file_tree: Option<FileTreeState> = if show_ft {
             std::env::current_dir().ok().map(|d| FileTreeState::from_dir(&d))
         } else {
             None

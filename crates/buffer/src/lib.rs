@@ -369,7 +369,7 @@ impl Buffer {
     /// * `line` - Target row index position.
     /// * `visible_height` - Active terminal sizing dimension height tracking value.
     pub fn goto_line(&mut self, line: usize, visible_height: usize) {
-        let max = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.rope.len_lines().saturating_sub(1);
         self.cursor.line = line.min(max);
         self.clamp_col_to_desired();
         self.scroll_to_cursor(visible_height);
@@ -394,8 +394,8 @@ impl Buffer {
     ///
     /// * `ch` - The designated insertion character item.
     pub fn insert_char(&mut self, ch: char) {
-        let idx    = self.char_idx();
-        let before = self.cursor.as_tuple();
+        let idx: usize    = self.char_idx();
+        let before: (usize, usize) = self.cursor.as_tuple();
         self.rope.insert_char(idx, ch);
         self.modified = true;
         if ch == '\n' {
@@ -405,7 +405,7 @@ impl Buffer {
             self.cursor.col   += 1;
         }
         self.cursor.desired_col = self.cursor.col;
-        let after = self.cursor.as_tuple();
+        let after: (usize, usize) = self.cursor.as_tuple();
         self.undo.push(EditRecord {
             char_idx: idx,
             inserted: ch.to_string(),
