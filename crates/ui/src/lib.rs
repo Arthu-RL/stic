@@ -120,7 +120,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     match app.mode {
-        Mode::Search | Mode::GotoLine | Mode::Command => render_prompt(frame, app, area),
+        Mode::Search | Mode::GotoLine | Mode::Command | Mode::SaveAs => render_prompt(frame, app, area),
         _ => {}
     }
 }
@@ -408,6 +408,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Mode::GotoLine       => (" GOTO    ", Color::Black, Color::Rgb(220, 130, 60)),
         Mode::CommandPalette => (" PALETTE ", Color::Black, Color::Rgb(100, 180, 220)),
         Mode::FileTree       => (" TREE    ", Color::Black, Color::Rgb(160, 200, 100)),
+        Mode::SaveAs         => (" SAVE AS ", Color::Black, Color::Rgb(80,  200, 160)),
     };
 
     let bar_bg: Color = Color::Rgb(22, 25, 34);
@@ -484,9 +485,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 /// * `area` - Screen constraint values layout container parameters.
 fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
     let (prefix, prompt_bg) = match app.mode {
-        Mode::Search   => ("/  ", Color::Rgb(60, 30, 70)),
-        Mode::GotoLine => (": ", Color::Rgb(40, 50, 70)),
-        Mode::Command  => (": ", Color::Rgb(40, 50, 70)),
+        Mode::Search   => ("/  ",          Color::Rgb(60, 30,  70)),
+        Mode::GotoLine => (": ",           Color::Rgb(40, 50,  70)),
+        Mode::Command  => (": ",           Color::Rgb(40, 50,  70)),
+        Mode::SaveAs   => ("Save As: ",    Color::Rgb(20, 60,  50)),
         _ => return,
     };
     let h: u16  = area.bottom().saturating_sub(1);

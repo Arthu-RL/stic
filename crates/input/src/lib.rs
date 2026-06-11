@@ -13,27 +13,40 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent,
 use app::{App, Mode};
 
 
-/// A trait managing interface input events mapping down onto application state.
+/// Trait governing how a mode handles raw input events.
 pub trait InputHandler {
-    /// Evaluates and processes target keyboard entry triggers.
+    /// Processes a single keyboard event for the implementing mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `app` - Mutable reference to the root application state.
+    /// * `key` - The key event received from the terminal.
     fn handle_key(app: &mut App, key: KeyEvent);
 
-    /// Evaluates and parses peripheral mouse tracking metrics.
-    /// Provides a blank default implementation for modes that ignore mouse gestures.
+    /// Processes a mouse event for the implementing mode.
+    ///
+    /// Provides a no-op default; override in modes that need pointer input.
+    ///
+    /// # Arguments
+    ///
+    /// * `app`   - Mutable reference to the root application state.
+    /// * `mouse` - The mouse event received from the terminal.
     fn handle_mouse(_app: &mut App, _mouse: MouseEvent) {}
 }
 
 
-/// Polls for incoming hardware terminal events and routes them to appropriate handlers.
-/// Evaluates global hotkeys before delegating specific input keys to active mode layout handlers.
-/// 
+/// Polls for the next terminal event and routes it to the correct mode handler.
+///
+/// Global hotkeys (`Ctrl+P`, `Ctrl+Shift+Q`) are intercepted before the
+/// per-mode dispatch so they work regardless of the active mode.
+///
 /// # Arguments
 ///
-/// * `app` - Mutable reference to the central application state engine instance.
+/// * `app` - Mutable reference to the root application state.
 ///
 /// # Returns
 ///
-/// A `Result` indicating success or an underlying event retrieval or execution error.
+/// `Ok(())` on success, or an `Err` if crossterm event polling fails.
 pub fn handle_input(app: &mut App) -> Result<()> {
     if !event::poll(std::time::Duration::from_millis(16))? {
         return Ok(());
@@ -41,11 +54,10 @@ pub fn handle_input(app: &mut App) -> Result<()> {
 
     match event::read()? {
         Event::Key(key) => {
-            // Intercepts and parses global hotkeys regardless of active runtime mode configurations.
-            // Returns `true` if a global shortcut was executed and event processing should halt.
-            let ctrl: bool = key.modifiers.contains(KeyModifiers::CONTROL);
+            let ctrl:  bool = key.modifiers.contains(KeyModifiers::CONTROL);
             let shift: bool = key.modifiers.contains(KeyModifiers::SHIFT);
 
+            // Global: toggle Command Palette from any mode.
             if ctrl && key.code == KeyCode::Char('p') {
                 if app.mode == Mode::CommandPalette {
                     app.mode = Mode::Normal;
@@ -56,6 +68,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // Global: save active file then force-quit.
             if ctrl && shift && (key.code == KeyCode::Char('Q') || key.code == KeyCode::Char('q')) {
                 app.save_file();
                 app.should_quit = true;
@@ -70,6 +83,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 Mode::GotoLine       => GotoLineHandler::handle_key(app, key),
                 Mode::CommandPalette => CommandPaletteHandler::handle_key(app, key),
                 Mode::FileTree       => FileTreeHandler::handle_key(app, key),
+                Mode::SaveAs         => SaveAsHandler::handle_key(app, key),
             }
         }
         Event::Mouse(mouse) => {
@@ -81,6 +95,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 Mode::GotoLine       => GotoLineHandler::handle_mouse(app, mouse),
                 Mode::CommandPalette => CommandPaletteHandler::handle_mouse(app, mouse),
                 Mode::FileTree       => FileTreeHandler::handle_mouse(app, mouse),
+                Mode::SaveAs         => SaveAsHandler::handle_mouse(app, mouse),
             }
         }
         Event::Resize(_, _) => {}
@@ -90,14 +105,15 @@ pub fn handle_input(app: &mut App) -> Result<()> {
 }
 
 
+/// Input handler for [`Mode::Normal`].
 pub struct NormalHandler;
 
 impl InputHandler for NormalHandler {
     fn handle_key(app: &mut App, key: KeyEvent) {
-        let ctrl: bool  = key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl:  bool = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift: bool = key.modifiers.contains(KeyModifiers::SHIFT);
-        let alt: bool   = key.modifiers.contains(KeyModifiers::ALT);
-        let _cfg   = &app.config.editor;
+        let alt:   bool = key.modifiers.contains(KeyModifiers::ALT);
+        let _cfg        = &app.config.editor;
 
         if !ctrl && key.code != KeyCode::Esc {
             app.editor.buf_mut().clear_selection();
@@ -133,74 +149,73 @@ impl InputHandler for NormalHandler {
             }
 
             KeyCode::Char('h') | KeyCode::Left if !alt  => app.editor.buf_mut().move_left(),
-            KeyCode::Char('j') | KeyCode::Up            => app.editor.buf_mut().move_up(1),
-            KeyCode::Char('k') | KeyCode::Down          => app.editor.buf_mut().move_down(1),
-            KeyCode::Char('l') | KeyCode::Right if !alt => app.editor.buf_mut().move_right(),
-            KeyCode::Char('q') | KeyCode::Home if !ctrl => app.editor.buf_mut().move_line_start(),
-            KeyCode::Char('e') | KeyCode::End           => app.editor.buf_mut().move_line_end(),
-            KeyCode::Char('g') if !ctrl                 => app.editor.buf_mut().goto_file_start(),
-            KeyCode::Char('G')                          => app.editor.buf_mut().goto_file_end(),
-            KeyCode::Char('a')                          => app.editor.buf_mut().move_word_forward(),
-            KeyCode::Char('d') if !ctrl                 => app.editor.buf_mut().move_word_backward(),
-            KeyCode::PageUp                             => app.editor.buf_mut().move_page_up(20),
-            KeyCode::PageDown                           => app.editor.buf_mut().move_page_down(20),
+            KeyCode::Char('j') | KeyCode::Up             => app.editor.buf_mut().move_up(1),
+            KeyCode::Char('k') | KeyCode::Down           => app.editor.buf_mut().move_down(1),
+            KeyCode::Char('l') | KeyCode::Right if !alt  => app.editor.buf_mut().move_right(),
+            KeyCode::Char('q') | KeyCode::Home if !ctrl  => app.editor.buf_mut().move_line_start(),
+            KeyCode::Char('e') | KeyCode::End            => app.editor.buf_mut().move_line_end(),
+            KeyCode::Char('g') if !ctrl                  => app.editor.buf_mut().goto_file_start(),
+            KeyCode::Char('G')                           => app.editor.buf_mut().goto_file_end(),
+            KeyCode::Char('a')                           => app.editor.buf_mut().move_word_forward(),
+            KeyCode::Char('d') if !ctrl                  => app.editor.buf_mut().move_word_backward(),
+            KeyCode::PageUp                              => app.editor.buf_mut().move_page_up(20),
+            KeyCode::PageDown                            => app.editor.buf_mut().move_page_down(20),
 
-            KeyCode::Char('s') if ctrl                  => app.save_file(),
-            KeyCode::Char('z') if ctrl                  => app.editor.buf_mut().undo(),
-            KeyCode::Char('y') if ctrl                  => app.editor.buf_mut().redo(),
-            KeyCode::Char('c') if ctrl                  => {
+            KeyCode::Char('s') if ctrl                   => app.save_file(),
+            KeyCode::Char('z') if ctrl                   => app.editor.buf_mut().undo(),
+            KeyCode::Char('y') if ctrl                   => app.editor.buf_mut().redo(),
+            KeyCode::Char('c') if ctrl                   => {
                 if let Some(text) = app.editor.buf().selected_text() {
                     app.clipboard = text;
                     app.set_message("Copied");
                 }
             }
-            KeyCode::Char('v') if ctrl                  => {
+            KeyCode::Char('v') if ctrl                   => {
                 let text = app.clipboard.clone();
                 if !text.is_empty() {
                     app.editor.buf_mut().delete_selection();
                     app.editor.buf_mut().insert_str(&text);
                 }
             }
-            KeyCode::Char('f') if ctrl                  => {
+            KeyCode::Char('f') if ctrl                   => {
                 app.prompt_input.clear();
                 app.search.last_match = None;
                 app.mode = Mode::Search;
             }
-            KeyCode::Char('g') if ctrl                  => {
+            KeyCode::Char('g') if ctrl                   => {
                 app.prompt_input.clear();
                 app.mode = Mode::GotoLine;
             }
-            KeyCode::Char('b') if ctrl                  => app.toggle_file_tree(),
-            KeyCode::Char('t') if ctrl                  => app.show_terminal = !app.show_terminal,
-            KeyCode::Char('d') if ctrl                  => app.show_diag = !app.show_diag,
-            KeyCode::Char('w') if ctrl                  => app.editor.close_active(),
-            KeyCode::Char('n') if ctrl                  => app.editor.new_buffer(),
-            KeyCode::Char('q') if ctrl                  => app.try_quit(),
+            KeyCode::Char('b') if ctrl                   => app.toggle_file_tree(),
+            KeyCode::Char('t') if ctrl                   => app.show_terminal = !app.show_terminal,
+            KeyCode::Char('d') if ctrl                   => app.show_diag = !app.show_diag,
+            KeyCode::Char('w') if ctrl                   => app.editor.close_active(),
+            KeyCode::Char('n') if ctrl                   => app.editor.new_buffer(),
+            KeyCode::Char('q') if ctrl                   => app.try_quit(),
 
-            KeyCode::Left  if alt                       => app.editor.prev_tab(),
-            KeyCode::Right if alt                       => app.editor.next_tab(),
+            KeyCode::Left  if alt                        => app.editor.prev_tab(),
+            KeyCode::Right if alt                        => app.editor.next_tab(),
 
-            KeyCode::F(3)                               => app.search_next(),
-            KeyCode::F(12)                              => app.set_message("LSP: go_to_def not yet wired"),
+            KeyCode::F(3)                                => app.search_next(),
+            KeyCode::F(12)                               => app.lsp_goto_def_key(),
 
-            KeyCode::Char('x')                          => app.editor.buf_mut().delete_forward(),
-            KeyCode::Delete                             => app.editor.buf_mut().delete_forward(),
+            KeyCode::Char('x')                           => app.editor.buf_mut().delete_forward(),
+            KeyCode::Delete                              => app.editor.buf_mut().delete_forward(),
 
-            KeyCode::Char('D') if ctrl && shift         => app.editor.buf_mut().duplicate_line(),
+            KeyCode::Char('D') if ctrl && shift          => app.editor.buf_mut().duplicate_line(),
 
             _ => {}
         }
 
-        let h: usize = 24;
-        app.editor.buf_mut().scroll_to_cursor(h);
+        app.editor.buf_mut().scroll_to_cursor(24);
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         match mouse.kind {
-            MouseEventKind::ScrollUp => app.editor.buf_mut().move_up(3),
+            MouseEventKind::ScrollUp   => app.editor.buf_mut().move_up(3),
             MouseEventKind::ScrollDown => app.editor.buf_mut().move_down(3),
             MouseEventKind::Down(MouseButton::Left) => {
-                let editor: &mut buffer::Buffer = app.editor.buf_mut();
+                let editor = app.editor.buf_mut();
 
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
 
@@ -216,9 +231,9 @@ impl InputHandler for NormalHandler {
                 editor.clear_selection();
                 editor.goto_line_col(target_line, target_col, 24);
                 editor.start_selection();
-            },
+            }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let editor: &mut buffer::Buffer = app.editor.buf_mut();
+                let editor = app.editor.buf_mut();
 
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
 
@@ -238,6 +253,7 @@ impl InputHandler for NormalHandler {
 }
 
 
+/// Input handler for [`Mode::Insert`].
 pub struct InsertHandler;
 
 impl InputHandler for InsertHandler {
@@ -273,12 +289,13 @@ impl InputHandler for InsertHandler {
                     'z' => app.editor.buf_mut().undo(),
                     'y' => app.editor.buf_mut().redo(),
                     'w' => {
+                        // Delete word backward (Ctrl+W).
                         let start_col: usize = app.editor.buf().cursor.col;
                         while app.editor.buf().cursor.col > 0 {
-                            let col: usize = app.editor.buf().cursor.col;
-                            let line: usize = app.editor.buf().cursor.line;
+                            let col:      usize  = app.editor.buf().cursor.col;
+                            let line:     usize  = app.editor.buf().cursor.line;
                             let line_str: String = app.editor.buf().get_line(line);
-                            let ch: Option<char> = line_str.chars().nth(col.saturating_sub(1));
+                            let ch = line_str.chars().nth(col.saturating_sub(1));
                             if ch.map(|c: char| c.is_whitespace()).unwrap_or(false) && col < start_col { break; }
                             app.editor.buf_mut().delete_backward();
                         }
@@ -289,13 +306,14 @@ impl InputHandler for InsertHandler {
             KeyCode::Char(c) => {
                 app.editor.buf_mut().delete_selection();
                 app.editor.buf_mut().insert_char(c);
+                app.notify_lsp_change();
             }
             KeyCode::Enter => {
                 app.editor.buf_mut().delete_selection();
                 let indent: String = if cfg.auto_indent {
                     let cur_line: usize = app.editor.buf().cursor.line;
                     let ls: String = app.editor.buf().get_line(cur_line);
-                    ls.chars().take_while(|c: &char| c.is_whitespace()).collect::<String>()
+                    ls.chars().take_while(|c: &char| c.is_whitespace()).collect()
                 } else {
                     String::new()
                 };
@@ -303,20 +321,24 @@ impl InputHandler for InsertHandler {
                 if !indent.is_empty() {
                     app.editor.buf_mut().insert_str(&indent);
                 }
+                app.notify_lsp_change();
             }
             KeyCode::Tab => {
                 app.editor.buf_mut().delete_selection();
                 app.editor.buf_mut().insert_tab(cfg.tab_size, cfg.use_spaces);
+                app.notify_lsp_change();
             }
             KeyCode::Backspace => {
                 if !app.editor.buf_mut().delete_selection() {
                     app.editor.buf_mut().delete_backward();
                 }
+                app.notify_lsp_change();
             }
             KeyCode::Delete => {
                 if !app.editor.buf_mut().delete_selection() {
                     app.editor.buf_mut().delete_forward();
                 }
+                app.notify_lsp_change();
             }
             KeyCode::Home  => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_line_start(); }
             KeyCode::End   => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_line_end();   }
@@ -329,39 +351,48 @@ impl InputHandler for InsertHandler {
 
             _ => {}
         }
-        let h: usize = 24;
-        app.editor.buf_mut().scroll_to_cursor(h);
+        app.editor.buf_mut().scroll_to_cursor(24);
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
-        // Shared editing interaction behaviors match NormalHandler specifications
         NormalHandler::handle_mouse(app, mouse);
     }
 }
 
 
+/// Input handler for [`Mode::Command`] (`:` command-line).
 pub struct CommandHandler;
 
 impl CommandHandler {
-    /// Evaluates and processes textual console instructions written inside the command bar.
+    /// Executes a colon command string entered in the command bar.
+    ///
+    /// Supported commands are documented in the module-level keybinding
+    /// reference under "Command Mode".
     ///
     /// # Arguments
     ///
-    /// * `app` - Mutable reference to the central application state engine instance.
-    /// * `cmd` - The trimmed instruction string slice to execute.
+    /// * `app` - Mutable reference to the root application state.
+    /// * `cmd` - Trimmed command string (without the leading `:`).
     pub fn execute_colon_cmd(app: &mut App, cmd: &str) {
         match cmd {
-            "w" | "write"          => app.save_file(),
-            "q" | "quit"           => app.try_quit(),
-            "wq" | "x"             => { app.save_file(); app.try_quit(); }
-            "q!" | "quit!"         => app.should_quit = true,
-            "wq!"                  => { app.save_file(); app.should_quit = true; }
+            "w" | "write"   => app.save_file(),
+            "q" | "quit"    => app.try_quit(),
+            "wq" | "x"      => { app.save_file(); app.try_quit(); }
+            "q!" | "quit!"  => app.should_quit = true,
+            "wq!"           => { app.save_file(); app.should_quit = true; }
+            // :w <path>  –– Save As to the given path.
+            s if s.starts_with("w ") => {
+                let path = s[2..].trim();
+                app.save_as_file(path);
+            }
+            // :e <path>  –– Open / switch to file.
             s if s.starts_with("e ") => {
-                let path: &std::path::Path = std::path::Path::new(s[2..].trim());
+                let path = std::path::Path::new(s[2..].trim());
                 if let Err(e) = app.open_file(path) {
                     app.set_message(format!("Error: {e}"));
                 }
             }
+            // :<number>  –– Jump to line.
             s if s.parse::<usize>().is_ok() => {
                 let n: usize = s.parse().unwrap();
                 app.editor.buf_mut().goto_line(n.saturating_sub(1), 24);
@@ -374,21 +405,22 @@ impl CommandHandler {
 impl InputHandler for CommandHandler {
     fn handle_key(app: &mut App, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc           => { app.prompt_input.clear(); app.mode = Mode::Normal; }
-            KeyCode::Enter         => {
+            KeyCode::Esc       => { app.prompt_input.clear(); app.mode = Mode::Normal; }
+            KeyCode::Enter     => {
                 let cmd = app.prompt_input.trim().to_string();
                 app.prompt_input.clear();
                 app.mode = Mode::Normal;
                 Self::execute_colon_cmd(app, &cmd);
             }
-            KeyCode::Char(c)       => app.prompt_input.push(c),
-            KeyCode::Backspace     => { app.prompt_input.pop(); }
+            KeyCode::Char(c)   => app.prompt_input.push(c),
+            KeyCode::Backspace => { app.prompt_input.pop(); }
             _ => {}
         }
     }
 }
 
 
+/// Input handler for [`Mode::Search`].
 pub struct SearchHandler;
 
 impl InputHandler for SearchHandler {
@@ -403,22 +435,21 @@ impl InputHandler for SearchHandler {
             }
             KeyCode::Char(c) => {
                 app.prompt_input.push(c);
-                let q: String = app.prompt_input.clone();
+                let q = app.prompt_input.clone();
                 if let Some((line, col)) = app.editor.buf().search_forward(&q) {
                     app.editor.buf_mut().cursor.set(line, col);
                     app.editor.buf_mut().scroll_to_cursor(24);
                     app.search.last_match = Some((line, col));
                 }
             }
-            KeyCode::Backspace => {
-                app.prompt_input.pop();
-            }
+            KeyCode::Backspace => { app.prompt_input.pop(); }
             _ => {}
         }
     }
 }
 
 
+/// Input handler for [`Mode::GotoLine`].
 pub struct GotoLineHandler;
 
 impl InputHandler for GotoLineHandler {
@@ -426,7 +457,7 @@ impl InputHandler for GotoLineHandler {
         match key.code {
             KeyCode::Esc   => { app.prompt_input.clear(); app.mode = Mode::Normal; }
             KeyCode::Enter => {
-                let input: String = app.prompt_input.trim().to_string();
+                let input = app.prompt_input.trim().to_string();
                 app.prompt_input.clear();
                 app.mode = Mode::Normal;
                 if let Ok(n) = input.parse::<usize>() {
@@ -443,30 +474,32 @@ impl InputHandler for GotoLineHandler {
 }
 
 
+/// Input handler for [`Mode::CommandPalette`].
 pub struct CommandPaletteHandler;
 
 impl InputHandler for CommandPaletteHandler {
     fn handle_key(app: &mut App, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc           => { app.command_palette.reset(); app.mode = Mode::Normal; }
-            KeyCode::Enter         => {
+            KeyCode::Esc       => { app.command_palette.reset(); app.mode = Mode::Normal; }
+            KeyCode::Enter     => {
                 if let Some(id) = app.command_palette.selected_id() {
-                    let id: String = id.to_string();
+                    let id = id.to_string();
                     app.command_palette.reset();
                     app.mode = Mode::Normal;
                     app.execute_palette_command(&id);
                 }
             }
-            KeyCode::Up            => app.command_palette.move_up(),
-            KeyCode::Down          => app.command_palette.move_down(),
-            KeyCode::Char(c)       => app.command_palette.push_char(c),
-            KeyCode::Backspace     => app.command_palette.pop_char(),
+            KeyCode::Up        => app.command_palette.move_up(),
+            KeyCode::Down      => app.command_palette.move_down(),
+            KeyCode::Char(c)   => app.command_palette.push_char(c),
+            KeyCode::Backspace => app.command_palette.pop_char(),
             _ => {}
         }
     }
 }
 
 
+/// Input handler for [`Mode::FileTree`].
 pub struct FileTreeHandler;
 
 impl InputHandler for FileTreeHandler {
@@ -480,9 +513,9 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
             KeyCode::Enter => {
-                let path: Option<std::path::PathBuf> = app.file_tree.as_ref()
-                    .and_then(|ft: &app::FileTreeState| ft.selected_path())
-                    .map(|p: &std::path::Path| p.to_path_buf());
+                let path = app.file_tree.as_ref()
+                    .and_then(|ft| ft.selected_path())
+                    .map(|p| p.to_path_buf());
                 if let Some(p) = path {
                     if p.is_file() {
                         if let Err(e) = app.open_file(&p) {
@@ -502,23 +535,15 @@ impl InputHandler for FileTreeHandler {
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
-                if let Some(ft) = &mut app.file_tree { 
-                    ft.move_up(); 
-                }
+                if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(ft) = &mut app.file_tree { 
-                    ft.move_down(); 
-                }
+                if let Some(ft) = &mut app.file_tree { ft.move_down(); }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(ft) = &mut app.file_tree {
-                    let clicked_row: usize = mouse.row as usize;
-                    ft.select_row(clicked_row);
-                    
-                    let path: Option<std::path::PathBuf> = ft.selected_path()
-                        .map(|p: &std::path::Path| p.to_path_buf());
-                    
+                    ft.select_row(mouse.row as usize);
+                    let path = ft.selected_path().map(|p| p.to_path_buf());
                     if let Some(p) = path {
                         if p.is_file() {
                             if let Err(e) = app.open_file(&p) {
@@ -529,6 +554,34 @@ impl InputHandler for FileTreeHandler {
                     }
                 }
             }
+            _ => {}
+        }
+    }
+}
+
+
+/// Input handler for [`Mode::SaveAs`].
+///
+/// The user types a destination path into the bottom prompt bar.
+/// `Enter` confirms and writes the file; `Esc` cancels.
+pub struct SaveAsHandler;
+
+impl InputHandler for SaveAsHandler {
+    fn handle_key(app: &mut App, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                app.prompt_input.clear();
+                app.set_message("Save As: cancelled");
+                app.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                let path = app.prompt_input.trim().to_string();
+                app.prompt_input.clear();
+                app.mode = Mode::Normal;
+                app.save_as_file(&path);
+            }
+            KeyCode::Char(c)   => app.prompt_input.push(c),
+            KeyCode::Backspace => { app.prompt_input.pop(); }
             _ => {}
         }
     }

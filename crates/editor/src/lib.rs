@@ -140,5 +140,5 @@ impl Editor {
     /// # Returns
     ///
     /// `true` if modified documents exist; otherwise, `false`.
-    pub fn any_modified(&self) -> bool { self.buffers.iter().any(|b| b.modified) }
+    pub fn any_modified(&self) -> bool { self.buffers.iter().any(|b: &Buffer| b.modified) }
 }

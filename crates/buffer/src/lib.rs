@@ -160,6 +160,12 @@ pub struct Buffer {
     pub scroll_top:  usize,
     pub scroll_left: usize,
     pub diagnostics: Vec<Diagnostic>,
+    /// Monotonically increasing document version counter.
+    ///
+    /// Incremented on every mutation and forwarded to the LSP as the
+    /// `version` field in `textDocument/didChange` notifications so the
+    /// server can order concurrent edits correctly.
+    pub version:     i32,
     undo:            UndoStack,
     pub selection_anchor: Option<usize>,
 }
@@ -180,6 +186,7 @@ impl Buffer {
             scroll_top:  0,
             scroll_left: 0,
             diagnostics: Vec::new(),
+            version:     0,
             undo:        UndoStack::new(2_000),
             selection_anchor: None,
         }
@@ -209,6 +216,7 @@ impl Buffer {
             scroll_top:  0,
             scroll_left: 0,
             diagnostics: Vec::new(),
+            version:     1,
             undo:        UndoStack::new(2_000),
             selection_anchor: None,
         })
@@ -419,6 +427,7 @@ impl Buffer {
         let before: (usize, usize) = self.cursor.as_tuple();
         self.rope.insert_char(idx, ch);
         self.modified = true;
+        self.version  = self.version.wrapping_add(1);
         if ch == '\n' {
             self.cursor.line += 1;
             self.cursor.col   = 0;
@@ -470,6 +479,7 @@ impl Buffer {
         let deleted: String = self.rope.char(idx).to_string();
         self.rope.remove(idx..idx + 1);
         self.modified = true;
+        self.version  = self.version.wrapping_add(1);
         let after: (usize, usize)   = self.cursor.as_tuple();
         self.undo.push(EditRecord {
             char_idx:      idx,
@@ -488,6 +498,7 @@ impl Buffer {
         let deleted: String = self.rope.char(idx).to_string();
         self.rope.remove(idx..idx + 1);
         self.modified = true;
+        self.version  = self.version.wrapping_add(1);
         self.clamp_col_to_desired();
         self.undo.push(EditRecord {
             char_idx:      idx,
@@ -507,6 +518,7 @@ impl Buffer {
         let deleted: String = self.rope.chars_at(start).take(line_end - start).collect();
         self.rope.remove(start..line_end);
         self.modified = true;
+        self.version  = self.version.wrapping_add(1);
         let pos: (usize, usize) = self.cursor.as_tuple();
         self.undo.push(EditRecord {
             char_idx: start, inserted: String::new(), deleted,
@@ -527,6 +539,7 @@ impl Buffer {
         self.rope.insert(eol_idx, &insert_str);
         self.cursor.line  += 1;
         self.modified      = true;
+        self.version       = self.version.wrapping_add(1);
     }
 
     /// Pulls out previous adjustment records to step back tree buffer positions.
@@ -541,6 +554,7 @@ impl Buffer {
             }
             self.cursor.set(r.cursor_before.0, r.cursor_before.1);
             self.modified = true;
+            self.version  = self.version.wrapping_add(1);
         }
     }
 
@@ -556,6 +570,7 @@ impl Buffer {
             }
             self.cursor.set(r.cursor_after.0, r.cursor_after.1);
             self.modified = true;
+            self.version  = self.version.wrapping_add(1);
         }
     }
 
@@ -715,6 +730,19 @@ impl Buffer {
     #[inline]
     pub fn line_count(&self) -> usize { self.rope.len_lines() }
 
+    /// Returns the complete buffer contents as an owned `String`.
+    ///
+    /// Used by the LSP subsystem when sending full-text document sync
+    /// notifications (`textDocument/didOpen`, `textDocument/didChange`).
+    ///
+    /// # Returns
+    ///
+    /// A heap-allocated copy of all text in the buffer.
+    #[inline]
+    pub fn text(&self) -> String {
+        self.rope.to_string()
+    }
+
     /// Captures fully copies of text tracking sequences.
     ///
     /// # Arguments
@@ -817,6 +845,7 @@ impl Buffer {
         let deleted: String = self.rope.slice(start..end).to_string();
         self.rope.remove(start..end);
         self.modified = true;
+        self.version  = self.version.wrapping_add(1);
         self.set_cursor_by_char(start);
         let after: (usize, usize) = self.cursor.as_tuple();
         self.undo.push(EditRecord {
@@ -828,6 +857,44 @@ impl Buffer {
         });
         self.selection_anchor = None;
         true
+    }
+
+    /// Deletes the entire line the cursor is on, adjusting the cursor to stay
+    /// within the remaining document bounds and pushing an undo record.
+    pub fn delete_line(&mut self) {
+        let total = self.rope.len_lines();
+        if total == 0 { return; }
+
+        let line       = self.cursor.line;
+        let line_start = self.rope.line_to_char(line);
+        let line_end   = if line + 1 < total {
+            self.rope.line_to_char(line + 1)
+        } else {
+            self.rope.len_chars()
+        };
+
+        if line_start == line_end { return; }
+
+        let before:  (usize, usize) = self.cursor.as_tuple();
+        let deleted: String         = self.rope.slice(line_start..line_end).to_string();
+        self.rope.remove(line_start..line_end);
+        self.modified = true;
+        self.version  = self.version.wrapping_add(1);
+
+        let new_total = self.rope.len_lines();
+        if new_total > 0 && self.cursor.line >= new_total {
+            self.cursor.line = new_total - 1;
+        }
+        self.clamp_col_to_desired();
+
+        let after: (usize, usize) = self.cursor.as_tuple();
+        self.undo.push(EditRecord {
+            char_idx:      line_start,
+            inserted:      String::new(),
+            deleted,
+            cursor_before: before,
+            cursor_after:  after,
+        });
     }
 
     /// Extracts and retrieves the currently selected text block substring.

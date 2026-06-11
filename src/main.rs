@@ -7,7 +7,8 @@ use crossterm::{
 };
 use ratatui::prelude::*;
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     // Creates backfround log to /tmp/stic.log that won't corrupt TUI
     if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/stic.log") {
         env_logger::Builder::new()

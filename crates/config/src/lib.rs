@@ -8,7 +8,21 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use thiserror::Error;
 
+#[derive(Debug, Error)]
+pub enum ConfigError {
+    #[error("cannot determine platform config directory")]
+    NoConfigDir,
+    #[error("I/O error for {path}: {source}")]
+    Io {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("TOML parse error: {0}")]
+    Parse(#[from] toml::de::Error),
+}
 
 /// The root structural mapping layer holding distinct configurable subgroups of the application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,23 +39,23 @@ pub struct Config {
 #[serde(default)]
 pub struct EditorConfig {
     /// Spaces per tab stop.
-    pub tab_size:        usize,
+    pub tab_size: usize,
     /// Expand tabs to spaces on insert.
-    pub use_spaces:      bool,
+    pub use_spaces: bool,
     /// Show absolute line numbers.
-    pub line_numbers:    bool,
-    /// Show numbers relative to cursor line (like Vim's relativenumber).
+    pub line_numbers: bool,
+    /// Show numbers relative to cursor line (Vim `relativenumber`).
     pub relative_numbers: bool,
     /// Soft-wrap lines at viewport width.
-    pub word_wrap:       bool,
+    pub word_wrap: bool,
     /// Copy indentation from the previous line on Enter.
-    pub auto_indent:     bool,
-    /// Minimum lines of context kept above/below cursor when scrolling.
-    pub scroll_off:      usize,
-    /// Highlight the line the cursor is on.
-    pub highlight_line:  bool,
-    /// Show a vertical guide at this column (0 = disabled).
-    pub ruler_column:    usize,
+    pub auto_indent: bool,
+    /// Minimum scroll-off lines kept above/below cursor.
+    pub scroll_off: usize,
+    /// Highlight the cursor line.
+    pub highlight_line: bool,
+    /// Vertical ruler column (0 = disabled).
+    pub ruler_column: usize,
 }
 
 
@@ -88,19 +102,21 @@ pub struct KeybindingsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LspConfig {
-    /// Per-language-extension server definitions.
-    pub servers: std::collections::HashMap<String, LspServer>,
+    /// Per-language-extension server definitions, keyed by file extension (e.g. `"rs"`, `"py"`).
+    pub servers: std::collections::HashMap<String, LspServerConfig>,
 }
 
 
-/// Execution parameters managing subsystem command hooks targeting specified compiler analyses.
+/// Executable + argument list for a single language server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LspServer {
+pub struct LspServerConfig {
     /// Executable name or absolute path.
     pub command: String,
     /// Extra CLI arguments.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Workspace root override; defaults to current directory.
+    pub root: Option<PathBuf>,
 }
 
 
@@ -206,12 +222,13 @@ impl Config {
     /// # Returns
     ///
     /// A descriptive `Result` containing the decoded config framework properties or parsing errors.
-    fn try_load() -> Result<Self> {
-        let path = Self::config_path()?;
+    fn try_load() -> Result<Self, ConfigError> {
+        let path: PathBuf = Self::config_path()?;
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = std::fs::read_to_string(&path)?;
+        let raw: String = std::fs::read_to_string(&path)
+            .map_err(|source: std::io::Error| ConfigError::Io { path: path.clone(), source })?;
         let cfg: Config = toml::from_str(&raw)?;
         Ok(cfg)
     }
@@ -221,9 +238,9 @@ impl Config {
     /// # Returns
     ///
     /// A descriptive `Result` wrapping operating system directory paths.
-    pub fn config_path() -> Result<PathBuf> {
-        let base = dirs::config_dir()
-            .ok_or_else(|| anyhow::anyhow!("cannot find config dir"))?;
+    pub fn config_path() -> Result<PathBuf, ConfigError> {
+        let base: PathBuf = dirs::config_dir()
+            .ok_or(ConfigError::NoConfigDir)?;
         Ok(base.join("stic").join("config.toml"))
     }
 
@@ -232,22 +249,22 @@ impl Config {
     /// # Returns
     ///
     /// A descriptive `Result` pointing onto calculated physical location destination targets.
-    pub fn write_default() -> Result<PathBuf> {
-        let path = Self::config_path()?;
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p)?;
+   pub fn write_default() -> Result<PathBuf, ConfigError> {
+        let path: PathBuf = Self::config_path()?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|source: std::io::Error| ConfigError::Io { path: parent.to_owned(), source })?;
         }
-        let text = DEFAULT_CONFIG_TOML;
-        std::fs::write(&path, text)?;
+        std::fs::write(&path, DEFAULT_CONFIG_TOML)
+            .map_err(|source: std::io::Error| ConfigError::Io { path: path.clone(), source })?;
         Ok(path)
     }
 }
 
 
-const DEFAULT_CONFIG_TOML: &str = r#"# Stic Editor – Configuration
-# Located at ~/.config/Stic/config.toml
-# All values below are the defaults; uncomment and edit to override.
-
+const DEFAULT_CONFIG_TOML: &str = r#"# Stic Editor – ~/.config/stic/config.toml
+# All values shown are the defaults.  Uncomment and edit to override.
+ 
 [editor]
 tab_size         = 4
 use_spaces       = true
@@ -258,25 +275,41 @@ auto_indent      = true
 scroll_off       = 5
 highlight_line   = true
 ruler_column     = 80
-
+ 
 [ui]
 theme            = "base16-ocean.dark"
 show_status_bar  = true
 show_file_tree   = false
 show_terminal    = false
 show_diagnostics = false
-
+ 
 [keybindings]
 save             = "ctrl+s"
 quit             = "ctrl+q"
+force_quit       = "ctrl+shift+q"
 command_palette  = "ctrl+p"
 toggle_file_tree = "ctrl+b"
 toggle_terminal  = "ctrl+t"
+toggle_diag      = "ctrl+d"
 find             = "ctrl+f"
+find_next        = "F3"
+find_prev        = "shift+F3"
 go_to_line       = "ctrl+g"
 undo             = "ctrl+z"
 redo             = "ctrl+y"
 next_tab         = "alt+right"
 prev_tab         = "alt+left"
 close_tab        = "ctrl+w"
+new_tab          = "ctrl+n"
+ 
+# LSP server definitions (keyed by file extension)
+# [lsp.servers.rs]
+# command = "rust-analyzer"
+#
+# [lsp.servers.py]
+# command = "pylsp"
+#
+# [lsp.servers.ts]
+# command = "typescript-language-server"
+# args    = ["--stdio"]
 "#;
