@@ -41,8 +41,8 @@ impl Highlighter {
     /// An initialized and prepared `Highlighter` instance.
     pub fn new(theme_name: &str) -> Self {
         Self {
-            ss:         SyntaxSet::load_defaults_newlines(),
-            ts:         ThemeSet::load_defaults(),
+            ss: SyntaxSet::load_defaults_newlines(),
+            ts: ThemeSet::load_defaults(),
             theme_name: theme_name.to_string(),
         }
     }
@@ -74,14 +74,14 @@ impl Highlighter {
     /// Parser engines depend heavily on historical transitions; string structures must pass
     /// in consecutive order to map state patterns accurately.
     pub fn highlight(&self, lines: &[String], extension: &str) -> Vec<Vec<HighlightedSpan>> {
-        let syntax = self.ss.find_syntax_by_extension(extension)
+        let syntax: &syntect::parsing::SyntaxReference = self.ss.find_syntax_by_extension(extension)
             .unwrap_or_else(|| self.ss.find_syntax_plain_text());
-        let mut h = HighlightLines::new(syntax, self.theme());
-        let mut out = Vec::with_capacity(lines.len());
+        let mut h: HighlightLines<'_> = HighlightLines::new(syntax, self.theme());
+        let mut out: Vec<Vec<HighlightedSpan>> = Vec::with_capacity(lines.len());
 
         for line in lines {
-            let ranges = h.highlight_line(line, &self.ss).unwrap_or_default();
-            let spans  = ranges.iter()
+            let ranges: Vec<(syntect::highlighting::Style, &str)> = h.highlight_line(line, &self.ss).unwrap_or_default();
+            let spans: Vec<HighlightedSpan>  = ranges.iter()
                 .map(|(sty, txt)| HighlightedSpan {
                     text:  txt.to_string(),
                     style: convert_style(sty),
@@ -98,7 +98,7 @@ impl Highlighter {
     ///
     /// A vector listing all valid and text-loadable identifier names.
     pub fn available_themes(&self) -> Vec<&str> {
-        self.ts.themes.keys().map(|s| s.as_str()).collect()
+        self.ts.themes.keys().map(|s: &String| s.as_str()).collect()
     }
 }
 
@@ -112,7 +112,7 @@ impl Highlighter {
 ///
 /// A stylized output layout structure containing mapping updates.
 fn convert_style(s: &syntect::highlighting::Style) -> Style {
-    let mut r = Style::default().fg(sc_to_ratatui(s.foreground));
+    let mut r: Style = Style::default().fg(sc_to_ratatui(s.foreground));
     if s.font_style.contains(FontStyle::BOLD)      { r = r.add_modifier(Modifier::BOLD);      }
     if s.font_style.contains(FontStyle::ITALIC)    { r = r.add_modifier(Modifier::ITALIC);    }
     if s.font_style.contains(FontStyle::UNDERLINE) { r = r.add_modifier(Modifier::UNDERLINED);}

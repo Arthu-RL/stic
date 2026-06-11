@@ -57,7 +57,7 @@ pub static COMMANDS: &[PaletteCmd] = &[
     cmd!("symbol_search",    "Search Symbols…",        "Ctrl+Shift+O",     "LSP"),
     // App
     cmd!("quit",             "Quit",                   "Ctrl+Q",           "App"),
-    cmd!("force_quit",       "Force Quit (no save)",   "Ctrl+Shift+Q",     "App"),
+    cmd!("force_quit",       "Save & Quit Application", "Ctrl+Shift+Q",     "App"),
 ];
 
 /// A UI component managing text input, selection state, and fuzzy string filtering
@@ -137,7 +137,6 @@ impl CommandPalette {
         if query.is_empty() { return true; }
         let mut chars = label.chars().flat_map(|c| c.to_lowercase());
         for qc in query.chars().flat_map(|c| c.to_lowercase()) {
-            // FIXED: Added .by_ref() so the iterator isn't consumed/moved inside the loop
             if !chars.by_ref().any(|c| c == qc) { return false; }
         }
         true
@@ -162,51 +161,53 @@ impl CommandPalette {
     ///
     /// * `frame` - The application UI view buffer drawing handle.
     pub fn render(&self, frame: &mut Frame) {
-        // FIXED: Modernized from frame.size() to frame.area()
-        let area   = frame.area();
-        let popup  = centered_rect(55, 60, area);
+        let area: Rect   = frame.area();
+        let popup: Rect  = centered_rect(55, 60, area);
 
         frame.render_widget(Clear, popup);
 
-        let outer = Block::default()
+        let outer: Block<'_> = Block::default()
             .title(" Command Palette ")
             .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan))
             .style(Style::default().bg(Color::Rgb(25, 29, 38)));
 
-        let inner = outer.inner(popup);
+        let inner: Rect = outer.inner(popup);
         frame.render_widget(outer, popup);
 
-        let layout = Layout::default()
+        let layout: std::rc::Rc<[Rect]> = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(3), Constraint::Min(1)])
             .split(inner);
 
-        let input_block = Block::default()
+        let input_block: Block<'_> = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(80, 100, 130)));
-        let prompt = format!("> {}", self.input);
-        let input_widget = Paragraph::new(prompt)
+        let prompt: String = format!("> {}", self.input);
+        let input_widget: Paragraph<'_> = Paragraph::new(prompt)
             .style(Style::default().fg(Color::White))
             .block(input_block);
         frame.render_widget(input_widget, layout[0]);
 
         let items: Vec<ListItem> = self.filtered.iter().enumerate().map(|(pos, &idx)| {
-            let cmd = &COMMANDS[idx];
-            let is_sel = pos == self.selected;
-            let label_style = if is_sel {
+            let cmd: &PaletteCmd = &COMMANDS[idx];
+            let is_sel: bool = pos == self.selected;
+            
+            let label_style: Style = if is_sel {
                 Style::default().fg(Color::White).bg(Color::Rgb(50, 80, 120)).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Rgb(200, 210, 220))
             };
-            let hint_style = Style::default().fg(Color::Rgb(100, 120, 150));
-            let cat_style  = Style::default().fg(Color::Rgb(80, 100, 130));
+            let hint_style: Style = Style::default().fg(Color::Rgb(100, 120, 150));
+            let cat_style: Style  = Style::default().fg(Color::Rgb(80, 100, 130));
 
-            // Format: [Category]  Label  ─  shortcut
-            let line = Line::from(vec![
+            let prefix: &str = if is_sel { "▶ " } else { "  " };
+
+            let line: Line<'_> = Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("[{}]  ", cmd.category), cat_style),
-                Span::styled(format!("{:<35}", cmd.label),    label_style),
+                Span::styled(format!("{:<33}", cmd.label),    label_style),
                 Span::styled(cmd.shortcut.to_string(),        hint_style),
             ]);
 
@@ -217,7 +218,7 @@ impl CommandPalette {
             })
         }).collect();
 
-        let list = List::new(items)
+        let list: List<'_> = List::new(items)
             .style(Style::default().bg(Color::Rgb(25, 29, 38)));
         frame.render_widget(list, layout[1]);
 
@@ -244,7 +245,7 @@ impl Default for CommandPalette {
 ///
 /// A calculated centered nested `Rect` target coordinates layout structure.
 fn centered_rect(pct_x: u16, pct_y: u16, r: Rect) -> Rect {
-    let v = Layout::default()
+    let v: std::rc::Rc<[Rect]> = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage((100 - pct_y) / 2),
