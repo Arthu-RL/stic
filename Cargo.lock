@@ -89,6 +89,7 @@ dependencies = [
  "config",
  "editor",
  "lsp",
+ "tokio",
 ]
 
 [[package]]

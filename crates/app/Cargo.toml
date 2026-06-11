@@ -10,3 +10,4 @@ editor.workspace          = true
 buffer.workspace          = true
 command_palette.workspace = true
 lsp.workspace             = true
+tokio.workspace           = true

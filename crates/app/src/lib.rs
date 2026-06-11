@@ -36,107 +36,317 @@ pub enum Mode {
 }
 
 
+// ── File-tree data model ──────────────────────────────────────────────────────
+
+/// A single entry returned by an async directory scan.
+#[derive(Debug, Clone)]
+pub struct FsEntry {
+    /// Display name (no path prefix).
+    pub name:   String,
+    /// Absolute path.
+    pub path:   PathBuf,
+    /// Whether this entry is a directory.
+    pub is_dir: bool,
+}
+
+/// One node in the lazy file tree.
+///
+/// Children start as `None` (not yet loaded) and are populated when the user
+/// expands the directory via an async background scan.
+#[derive(Debug)]
+pub struct FileTreeNode {
+    /// The filesystem entry this node represents.
+    pub entry:    FsEntry,
+    /// Whether this directory node is currently expanded.
+    pub expanded: bool,
+    /// `None` = not yet loaded; `Some(_)` = loaded (possibly empty).
+    pub children: Option<Vec<FileTreeNode>>,
+    /// `true` while a background scan is in-flight for this directory.
+    pub loading:  bool,
+}
+
+/// Internal message produced by a background directory scan task.
+struct ScanResult {
+    /// The directory whose direct children were read.
+    parent:  PathBuf,
+    /// The sorted entries that were found.
+    entries: Vec<FsEntry>,
+}
+
 /// Persistent navigation state for the file-tree panel.
+///
+/// ## Architecture
+///
+/// The tree is **lazy**: only the direct children of the root are loaded at
+/// construction time; subdirectory contents are fetched on demand when the
+/// user expands a node.  All `tokio::fs` I/O runs on a background task and
+/// the result is sent back over an unbounded channel.  `drain_scan_results`
+/// (called once per tick from `App::tick`) applies the results to the tree
+/// without blocking the UI thread.
+///
+/// The displayed list is always derived on demand by `visible_flat`, which
+/// does a depth-first traversal of expanded nodes.  This avoids keeping a
+/// stale cached flat list and is O(n_visible) — cheap for a bounded tree.
 pub struct FileTreeState {
-    /// Flat list of `(indent_depth, display_label, absolute_path)` entries.
-    pub entries:  Vec<(usize, String, PathBuf)>,
-    /// Zero-based index of the currently highlighted row.
-    pub selected: usize,
-    root:         PathBuf,
+    root:       PathBuf,
+    /// Root-level children (depth 0).  Empty until the initial scan lands.
+    pub nodes:  Vec<FileTreeNode>,
+    /// Index into the *visible* flat list.
+    pub selected:   usize,
+    /// First visible row (vertical scroll offset).
+    pub scroll_top: usize,
+    scan_tx: tokio::sync::mpsc::UnboundedSender<ScanResult>,
+    scan_rx: tokio::sync::mpsc::UnboundedReceiver<ScanResult>,
 }
 
 impl FileTreeState {
-    /// Builds a new `FileTreeState` rooted at `root`, walking up to three
-    /// directory levels deep.
+    /// Creates a new `FileTreeState` rooted at `root` and immediately kicks
+    /// off an async scan of the root directory.  The tree will be empty until
+    /// the first tick drains the scan result.
     ///
     /// # Arguments
     ///
-    /// * `root` - Directory to use as the tree root.
+    /// * `root` - Absolute path of the directory to use as the tree root.
     ///
     /// # Returns
     ///
-    /// A fully populated `FileTreeState`.
-    pub fn from_dir(root: &Path) -> Self {
-        let entries = walk_dir(root, 0, 3);
-        Self { entries, selected: 0, root: root.to_path_buf() }
+    /// A `FileTreeState` ready to receive scan results on the next tick.
+    pub fn new(root: PathBuf) -> Self {
+        let (scan_tx, scan_rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx  = scan_tx.clone();
+        let dir = root.clone();
+        tokio::spawn(async move {
+            let entries = scan_dir(&dir).await;
+            let _ = tx.send(ScanResult { parent: dir, entries });
+        });
+        Self { root, nodes: Vec::new(), selected: 0, scroll_top: 0, scan_tx, scan_rx }
     }
 
-    /// Moves the selection highlight up one row, clamping at the top.
+    /// Returns a flattened view of the visible tree: `(depth, node)` pairs for
+    /// every node that is currently reachable (i.e. all ancestors are expanded).
+    ///
+    /// Allocation is O(n_visible) and bounded by the depth-3 scan limit,
+    /// making it safe to call every render frame.
+    pub fn visible_flat(&self) -> Vec<(usize, &FileTreeNode)> {
+        fn collect<'a>(
+            nodes: &'a [FileTreeNode],
+            depth: usize,
+            out:   &mut Vec<(usize, &'a FileTreeNode)>,
+        ) {
+            for node in nodes {
+                out.push((depth, node));
+                if node.expanded {
+                    if let Some(ch) = &node.children {
+                        collect(ch, depth + 1, out);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        collect(&self.nodes, 0, &mut out);
+        out
+    }
+
+    /// Returns the path of the currently selected entry, if any.
+    ///
+    /// # Returns
+    ///
+    /// The selected entry's absolute `PathBuf`, or `None` when the tree
+    /// is still loading.
+    pub fn selected_path(&self) -> Option<PathBuf> {
+        let flat = self.visible_flat();
+        flat.get(self.selected).map(|(_, n)| n.entry.path.clone())
+    }
+
+    /// Moves the selection one row up, adjusting scroll to keep it visible.
     pub fn move_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
-    }
-
-    /// Moves the selection highlight down one row, clamping at the bottom.
-    pub fn move_down(&mut self) {
-        if self.selected + 1 < self.entries.len() {
-            self.selected += 1;
+        if self.selected > 0 {
+            self.selected -= 1;
+            if self.selected < self.scroll_top {
+                self.scroll_top = self.selected;
+            }
         }
     }
 
-    /// Returns the path of the currently highlighted entry, if any.
-    ///
-    /// # Returns
-    ///
-    /// An `Option` containing a reference to the selected `Path`.
-    pub fn selected_path(&self) -> Option<&Path> {
-        self.entries.get(self.selected).map(|(_, _, p)| p.as_path())
-    }
-
-    /// Re-scans the root directory to reflect any filesystem changes.
-    pub fn refresh(&mut self) {
-        let root = self.root.clone();
-        self.entries = walk_dir(&root, 0, 3);
-    }
-
-    /// Selects the entry at the given row index, clamping to valid bounds.
+    /// Moves the selection one row down, adjusting scroll to keep it visible.
     ///
     /// # Arguments
     ///
-    /// * `row` - Zero-based row index to select.
-    pub fn select_row(&mut self, row: usize) {
-        if !self.entries.is_empty() {
-            self.selected = row.min(self.entries.len() - 1);
+    /// * `visible_height` - Number of rows the panel can display.
+    pub fn move_down(&mut self, visible_height: usize) {
+        let max = self.visible_flat().len().saturating_sub(1);
+        if self.selected < max {
+            self.selected += 1;
+            let bottom = self.scroll_top + visible_height.saturating_sub(1);
+            if self.selected > bottom {
+                self.scroll_top += 1;
+            }
+        }
+    }
+
+    /// Toggles the expand/collapse state of the currently selected directory.
+    ///
+    /// - If the node is a **collapsed directory** whose children have not yet
+    ///   been loaded, a background scan is spawned and `loading` is set to
+    ///   `true` until the result arrives.
+    /// - Directories at depth ≥ 3 are not expanded (depth limit).
+    /// - Files are silently ignored.
+    pub fn toggle_selected(&mut self) {
+        let (depth, path, is_dir) = {
+            let flat = self.visible_flat();
+            let Some((d, node)) = flat.get(self.selected) else { return };
+            if !node.entry.is_dir { return; }
+            (*d, node.entry.path.clone(), true)
+        };
+        if !is_dir || depth >= 3 { return; }
+
+        let needs_load;
+        if let Some(node) = find_node_mut(&mut self.nodes, &path) {
+            if node.expanded {
+                node.expanded = false;
+                return;
+            }
+            node.expanded  = true;
+            needs_load = node.children.is_none() && !node.loading;
+            if needs_load { node.loading = true; }
+        } else {
+            return;
+        }
+
+        if needs_load {
+            let tx  = self.scan_tx.clone();
+            let dir = path.clone();
+            tokio::spawn(async move {
+                let entries = scan_dir(&dir).await;
+                let _ = tx.send(ScanResult { parent: dir, entries });
+            });
+        }
+    }
+
+    /// If the selected node is an expanded directory, collapse it.
+    /// Otherwise, jump the selection to the nearest ancestor directory
+    /// that is visible in the current flat view.
+    pub fn collapse_or_jump_parent(&mut self) {
+        let (path, is_dir, expanded) = {
+            let flat = self.visible_flat();
+            let Some((_, node)) = flat.get(self.selected) else { return };
+            (node.entry.path.clone(), node.entry.is_dir, node.expanded)
+        };
+
+        if is_dir && expanded {
+            if let Some(node) = find_node_mut(&mut self.nodes, &path) {
+                node.expanded = false;
+            }
+            return;
+        }
+
+        // Move selection to the parent directory row if it is visible.
+        if let Some(parent) = path.parent() {
+            let parent = parent.to_path_buf();
+            let flat = self.visible_flat();
+            if let Some(idx) = flat.iter().position(|(_, n)| n.entry.path == parent) {
+                self.selected = idx;
+                if self.selected < self.scroll_top {
+                    self.scroll_top = self.selected;
+                }
+            }
+        }
+    }
+
+    /// Sets the selection to the row nearest `terminal_row` and returns the
+    /// path of the newly selected entry (for double-click-style open).
+    ///
+    /// # Arguments
+    ///
+    /// * `terminal_row` - Raw terminal row from a mouse event.
+    ///
+    /// # Returns
+    ///
+    /// The selected entry's path after updating the selection.
+    pub fn click_row(&mut self, terminal_row: usize) -> Option<PathBuf> {
+        let visible_count = self.visible_flat().len();
+        if visible_count == 0 { return None; }
+        self.selected = (self.scroll_top + terminal_row).min(visible_count - 1);
+        self.selected_path()
+    }
+
+    /// Clears the tree and re-queues an async scan of the root directory.
+    pub fn refresh(&mut self) {
+        self.nodes.clear();
+        self.selected   = 0;
+        self.scroll_top = 0;
+        let tx  = self.scan_tx.clone();
+        let dir = self.root.clone();
+        tokio::spawn(async move {
+            let entries = scan_dir(&dir).await;
+            let _ = tx.send(ScanResult { parent: dir, entries });
+        });
+    }
+
+    /// Drains all completed scan results from the background channel and
+    /// patches the tree.
+    ///
+    /// Must be called exactly once per event-loop tick.  Non-blocking.
+    pub fn drain_scan_results(&mut self) {
+        while let Ok(result) = self.scan_rx.try_recv() {
+            if result.parent == self.root {
+                // Initial root load.
+                self.nodes = make_nodes(result.entries);
+            } else if let Some(node) = find_node_mut(&mut self.nodes, &result.parent) {
+                node.loading  = false;
+                node.children = Some(make_nodes(result.entries));
+            }
         }
     }
 }
 
-/// Recursively enumerates a directory up to `max_depth` levels deep.
-///
-/// Entries are sorted with directories first, then files, both in
-/// case-insensitive alphabetical order.
-///
-/// # Arguments
-///
-/// * `dir`       - Root directory to enumerate.
-/// * `depth`     - Current recursion depth (pass `0` on the initial call).
-/// * `max_depth` - Maximum recursion depth allowed.
-///
-/// # Returns
-///
-/// A flat list of `(indent_depth, display_label, absolute_path)` tuples.
-fn walk_dir(dir: &Path, depth: usize, max_depth: usize) -> Vec<(usize, String, PathBuf)> {
-    if depth > max_depth { return vec![]; }
-    let Ok(read) = std::fs::read_dir(dir) else { return vec![]; };
+// ── File-tree helpers ─────────────────────────────────────────────────────────
 
-    let mut entries: Vec<std::fs::DirEntry> = read.flatten().collect();
-    // Directories first, then files, both alphabetical.
-    entries.sort_unstable_by_key(|e: &std::fs::DirEntry| {
-        let is_file: bool = e.file_type().map(|t: std::fs::FileType| t.is_file()).unwrap_or(true);
-        (is_file as u8, e.file_name())
-    });
+/// Converts a list of `FsEntry` values into a fresh list of leaf `FileTreeNode`s.
+fn make_nodes(entries: Vec<FsEntry>) -> Vec<FileTreeNode> {
+    entries.into_iter().map(|e| FileTreeNode {
+        entry:    e,
+        expanded: false,
+        children: None,
+        loading:  false,
+    }).collect()
+}
 
-    let mut out: Vec<(usize, String, PathBuf)> = Vec::new();
-    for e in entries {
-        let path: PathBuf  = e.path();
-        let name: String  = e.file_name().to_string_lossy().into_owned();
+/// Reads the direct children of `dir` asynchronously, returning them sorted
+/// with directories first then files, both alphabetically.
+///
+/// Dot-files are skipped.  Errors reading individual entries are silently
+/// ignored so a single broken symlink does not abort the scan.
+async fn scan_dir(dir: &Path) -> Vec<FsEntry> {
+    let Ok(mut rd) = tokio::fs::read_dir(dir).await else { return vec![] };
+    let mut entries: Vec<FsEntry> = Vec::new();
+    while let Ok(Some(e)) = rd.next_entry().await {
+        let name = e.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') { continue; }
-        let label: String = if path.is_dir() { name } else { format!("  {name}") };
-        out.push((depth, label, path.clone()));
-        if path.is_dir() {
-            out.extend(walk_dir(&path, depth + 1, max_depth));
+        let Ok(meta) = e.metadata().await else { continue };
+        entries.push(FsEntry { is_dir: meta.is_dir(), path: e.path(), name });
+    }
+    entries.sort_unstable_by_key(|e| (!e.is_dir, e.name.to_lowercase()));
+    entries
+}
+
+/// Recursively searches `nodes` for the node whose path equals `target`,
+/// returning a mutable reference to it.
+fn find_node_mut<'a>(
+    nodes:  &'a mut Vec<FileTreeNode>,
+    target: &Path,
+) -> Option<&'a mut FileTreeNode> {
+    for node in nodes.iter_mut() {
+        if node.entry.path == target {
+            return Some(node);
+        }
+        if let Some(children) = &mut node.children {
+            if let Some(found) = find_node_mut(children, target) {
+                return Some(found);
+            }
         }
     }
-    out
+    None
 }
 
 
@@ -221,7 +431,7 @@ impl App {
         let show_diag: bool = config.ui.show_diagnostics;
 
         let file_tree: Option<FileTreeState> = if show_ft {
-            std::env::current_dir().ok().map(|d: PathBuf| FileTreeState::from_dir(&d))
+            std::env::current_dir().ok().map(FileTreeState::new)
         } else {
             None
         };
@@ -264,10 +474,14 @@ impl App {
         self.message_ticks = 60;
     }
 
-    /// Advances one event-loop tick: drains pending LSP events and ages out
-    /// the transient status message.
+    /// Advances one event-loop tick: drains pending LSP events and file-tree
+    /// scan results, then ages out the transient status message.
     pub fn tick(&mut self) {
         self.drain_lsp_events();
+
+        if let Some(ft) = &mut self.file_tree {
+            ft.drain_scan_results();
+        }
 
         if let Some(t) = self.message_ticks.checked_sub(1) {
             self.message_ticks = t;
@@ -445,7 +659,7 @@ impl App {
             "go_to_line"       => { self.prompt_input.clear();               self.mode = Mode::GotoLine; }
             "duplicate_line"   => { self.editor.buf_mut().duplicate_line();  self.mode = Mode::Normal; }
             "delete_line"      => { self.editor.buf_mut().delete_line();     self.mode = Mode::Normal; }
-            "toggle_file_tree" => { self.toggle_file_tree();                 self.mode = Mode::Normal; }
+            "toggle_file_tree" => { self.toggle_file_tree(); }
             "toggle_terminal"  => { self.show_terminal = !self.show_terminal; self.mode = Mode::Normal; }
             "toggle_diag"      => { self.show_diag = !self.show_diag;        self.mode = Mode::Normal; }
             "next_tab"         => { self.editor.next_tab();                  self.mode = Mode::Normal; }
@@ -553,18 +767,23 @@ impl App {
         }
     }
 
-    /// Toggles the file-tree panel, rebuilding it rooted at the directory of
-    /// the active file (or the current working directory as a fallback).
+    /// Toggles the file-tree panel and switches the editor mode accordingly.
+    ///
+    /// Opening the panel sets the mode to [`Mode::FileTree`] so that
+    /// navigation keys are immediately active.  Closing it returns to
+    /// [`Mode::Normal`].
     pub fn toggle_file_tree(&mut self) {
         if self.file_tree.is_some() {
             self.file_tree = None;
+            self.mode      = Mode::Normal;
         } else {
             let root: PathBuf = self.editor.buf().path.as_ref()
                 .and_then(|p: &PathBuf| p.parent())
                 .map(PathBuf::from)
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| PathBuf::from("."));
-            self.file_tree = Some(FileTreeState::from_dir(&root));
+            self.file_tree = Some(FileTreeState::new(root));
+            self.mode      = Mode::FileTree;
         }
     }
 

@@ -63,8 +63,10 @@ pub static COMMANDS: &[PaletteCmd] = &[
 /// A UI component managing text input, selection state, and fuzzy string filtering
 /// over the global command list.
 pub struct CommandPalette {
-    pub input: String,
+    pub input:    String,
     pub selected: usize,
+    /// First visible row in the list (vertical scroll offset).
+    pub scroll_top: usize,
     filtered: Vec<usize>, // indices into COMMANDS
 }
 
@@ -76,13 +78,14 @@ impl CommandPalette {
     /// An empty, initialized `CommandPalette` with all commands visible by default.
     pub fn new() -> Self {
         let filtered = (0..COMMANDS.len()).collect();
-        Self { input: String::new(), selected: 0, filtered }
+        Self { input: String::new(), selected: 0, scroll_top: 0, filtered }
     }
 
     /// Resets the input search text and moves the item selection back to the top.
     pub fn reset(&mut self) {
         self.input.clear();
-        self.selected = 0;
+        self.selected   = 0;
+        self.scroll_top = 0;
         self.refilter();
     }
 
@@ -93,25 +96,43 @@ impl CommandPalette {
     /// * `ch` - The character character typed by the user.
     pub fn push_char(&mut self, ch: char) {
         self.input.push(ch);
-        self.selected = 0;
+        self.selected   = 0;
+        self.scroll_top = 0;
         self.refilter();
     }
 
     /// Removes the trailing character from the query string and updates the filtered selection list.
     pub fn pop_char(&mut self) {
         self.input.pop();
-        self.selected = 0;
+        self.selected   = 0;
+        self.scroll_top = 0;
         self.refilter();
     }
 
     /// Navigates up by one item within the filtered list bounds.
     pub fn move_up(&mut self) {
-        if self.selected > 0 { self.selected -= 1; }
+        if self.selected > 0 {
+            self.selected -= 1;
+            if self.selected < self.scroll_top {
+                self.scroll_top = self.selected;
+            }
+        }
     }
 
     /// Navigates down by one item within the filtered list bounds.
-    pub fn move_down(&mut self) {
-        if self.selected + 1 < self.filtered.len() { self.selected += 1; }
+    ///
+    /// # Arguments
+    ///
+    /// * `visible_h` - Number of rows visible in the list area; used to advance
+    ///   the scroll offset so the selected row is always on screen.
+    pub fn move_down(&mut self, visible_h: usize) {
+        if self.selected + 1 < self.filtered.len() {
+            self.selected += 1;
+            let bottom = self.scroll_top + visible_h.saturating_sub(1);
+            if self.selected > bottom {
+                self.scroll_top += 1;
+            }
+        }
     }
 
     /// Retrieves the identity key of the currently selected command.
@@ -157,10 +178,13 @@ impl CommandPalette {
 
     /// Renders the complete interactive popup panel layout over the current terminal screen frame.
     ///
+    /// Takes `&mut self` so it can keep `scroll_top` in sync with `selected`
+    /// whenever the visible height changes (e.g. on terminal resize).
+    ///
     /// # Arguments
     ///
     /// * `frame` - The application UI view buffer drawing handle.
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         let area: Rect   = frame.area();
         let popup: Rect  = centered_rect(55, 60, area);
 
@@ -190,33 +214,47 @@ impl CommandPalette {
             .block(input_block);
         frame.render_widget(input_widget, layout[0]);
 
-        let items: Vec<ListItem> = self.filtered.iter().enumerate().map(|(pos, &idx)| {
-            let cmd: &PaletteCmd = &COMMANDS[idx];
-            let is_sel: bool = pos == self.selected;
-            
-            let label_style: Style = if is_sel {
-                Style::default().fg(Color::White).bg(Color::Rgb(50, 80, 120)).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Rgb(200, 210, 220))
-            };
-            let hint_style: Style = Style::default().fg(Color::Rgb(100, 120, 150));
-            let cat_style: Style  = Style::default().fg(Color::Rgb(80, 100, 130));
+        // Clamp scroll_top so the selected row is always visible.
+        let visible_h = layout[1].height as usize;
+        if self.selected < self.scroll_top {
+            self.scroll_top = self.selected;
+        } else if visible_h > 0 && self.selected >= self.scroll_top + visible_h {
+            self.scroll_top = self.selected - visible_h + 1;
+        }
 
-            let prefix: &str = if is_sel { "▶ " } else { "  " };
+        let items: Vec<ListItem> = self.filtered
+            .iter()
+            .enumerate()
+            .skip(self.scroll_top)
+            .take(visible_h)
+            .map(|(pos, &idx)| {
+                let cmd: &PaletteCmd = &COMMANDS[idx];
+                let is_sel: bool = pos == self.selected;
 
-            let line: Line<'_> = Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("[{}]  ", cmd.category), cat_style),
-                Span::styled(format!("{:<33}", cmd.label),    label_style),
-                Span::styled(cmd.shortcut.to_string(),        hint_style),
-            ]);
+                let label_style: Style = if is_sel {
+                    Style::default().fg(Color::White).bg(Color::Rgb(50, 80, 120)).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Rgb(200, 210, 220))
+                };
+                let hint_style: Style = Style::default().fg(Color::Rgb(100, 120, 150));
+                let cat_style: Style  = Style::default().fg(Color::Rgb(80, 100, 130));
 
-            ListItem::new(line).style(if is_sel {
-                Style::default().bg(Color::Rgb(35, 50, 70))
-            } else {
-                Style::default()
+                let prefix: &str = if is_sel { "▶ " } else { "  " };
+
+                let line: Line<'_> = Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("[{}]  ", cmd.category), cat_style),
+                    Span::styled(format!("{:<33}", cmd.label),    label_style),
+                    Span::styled(cmd.shortcut.to_string(),        hint_style),
+                ]);
+
+                ListItem::new(line).style(if is_sel {
+                    Style::default().bg(Color::Rgb(35, 50, 70))
+                } else {
+                    Style::default()
+                })
             })
-        }).collect();
+            .collect();
 
         let list: List<'_> = List::new(items)
             .style(Style::default().bg(Color::Rgb(25, 29, 38)));

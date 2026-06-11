@@ -308,20 +308,64 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
     let inner: Rect = block.inner(area);
     frame.render_widget(block, area);
 
-    if let Some(ft) = &app.file_tree {
-        let items: Vec<ListItem> = ft.entries.iter().enumerate().map(|(i, (depth, name, _))| {
-            let indent: String = "  ".repeat(*depth);
-            let label: String  = format!("{}{}", indent, name);
-            let style: Style  = if i == ft.selected {
-                Style::default().fg(Color::White).bg(BG_ACTIVE).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(FG)
-            };
-            ListItem::new(label).style(style)
-        }).collect();
-        let list: List<'_> = List::new(items).style(Style::default().bg(BG_PANEL));
-        frame.render_widget(list, inner);
+    let Some(ft) = &app.file_tree else { return };
+
+    let flat  = ft.visible_flat();
+    let total = flat.len();
+
+    if total == 0 {
+        // Show a spinner-style hint while the initial scan is in progress.
+        let p = Paragraph::new("  loading…")
+            .style(Style::default().fg(FG_DIM).bg(BG_PANEL));
+        frame.render_widget(p, inner);
+        return;
     }
+
+    let visible_h = inner.height as usize;
+    // Ensure scroll_top is sane (read-only here; mutation happens in move_up/down).
+    let scroll_top = ft.scroll_top.min(total.saturating_sub(1));
+
+    let items: Vec<ListItem> = flat
+        .iter()
+        .enumerate()
+        .skip(scroll_top)
+        .take(visible_h)
+        .map(|(i, (depth, node))| {
+            let is_sel = i == ft.selected;
+
+            let icon: &str = if node.entry.is_dir {
+                if node.loading       { "⊙ " }
+                else if node.expanded { "▼ " }
+                else                  { "▶ " }
+            } else {
+                "  "
+            };
+
+            let (name_fg, icon_fg) = if node.entry.is_dir {
+                (ACCENT, ACCENT)
+            } else {
+                (FG, FG_DIM)
+            };
+
+            let bg = if is_sel { BG_ACTIVE } else { BG_PANEL };
+            let name_style = if is_sel {
+                Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(name_fg).bg(bg)
+            };
+
+            let indent = "  ".repeat(*depth);
+            Line::from(vec![
+                Span::styled(indent,                    Style::default().bg(bg)),
+                Span::styled(icon,  Style::default().fg(icon_fg).bg(bg)),
+                Span::styled(node.entry.name.as_str(), name_style),
+            ])
+        })
+        .map(ListItem::new)
+        .collect();
+
+    let list = List::new(items).style(Style::default().bg(BG_PANEL));
+    frame.render_widget(list, inner);
 }
 
 

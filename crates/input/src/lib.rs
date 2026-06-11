@@ -490,7 +490,7 @@ impl InputHandler for CommandPaletteHandler {
                 }
             }
             KeyCode::Up        => app.command_palette.move_up(),
-            KeyCode::Down      => app.command_palette.move_down(),
+            KeyCode::Down      => app.command_palette.move_down(12),
             KeyCode::Char(c)   => app.command_palette.push_char(c),
             KeyCode::Backspace => app.command_palette.pop_char(),
             _ => {}
@@ -500,31 +500,55 @@ impl InputHandler for CommandPaletteHandler {
 
 
 /// Input handler for [`Mode::FileTree`].
+///
+/// ## Keybindings
+///
+/// | Key             | Action                                                  |
+/// |-----------------|---------------------------------------------------------|
+/// | `j` / `↓`       | Move selection down                                     |
+/// | `k` / `↑`       | Move selection up                                       |
+/// | `Space` / `l` / `→` | Expand directory / collapse if already expanded    |
+/// | `h` / `←`       | Collapse directory, or jump to parent if already closed |
+/// | `Enter`         | Open file in editor (directories: toggle expand)        |
+/// | `r`             | Refresh tree (re-scans root)                            |
+/// | `Esc` / `q`     | Return to Normal mode                                   |
 pub struct FileTreeHandler;
 
 impl InputHandler for FileTreeHandler {
     fn handle_key(app: &mut App, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => app.mode = Mode::Normal,
+            KeyCode::Esc | KeyCode::Char('q') => app.toggle_file_tree(),
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(); }
+                if let Some(ft) = &mut app.file_tree { ft.move_down(25); }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
+            KeyCode::Char(' ') | KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(ft) = &mut app.file_tree { ft.toggle_selected(); }
+            }
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(ft) = &mut app.file_tree { ft.collapse_or_jump_parent(); }
+            }
             KeyCode::Enter => {
-                let path = app.file_tree.as_ref()
-                    .and_then(|ft| ft.selected_path())
-                    .map(|p| p.to_path_buf());
-                if let Some(p) = path {
-                    if p.is_file() {
-                        if let Err(e) = app.open_file(&p) {
-                            app.set_message(format!("Error: {e}"));
-                        }
-                        app.mode = Mode::Normal;
+                let path = app.file_tree.as_mut().and_then(|ft| {
+                    // Check whether selected item is a file; toggle dirs here too.
+                    let p = ft.selected_path()?;
+                    if p.is_dir() {
+                        ft.toggle_selected();
+                        None // directories don't open in the editor
+                    } else {
+                        Some(p)
                     }
+                });
+                if let Some(p) = path {
+                    if let Err(e) = app.open_file(&p) {
+                        app.set_message(format!("Error: {e}"));
+                    }
+                    app.mode = Mode::Normal;
                 }
             }
+
             KeyCode::Char('r') => {
                 if let Some(ft) = &mut app.file_tree { ft.refresh(); }
             }
@@ -538,18 +562,19 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(); }
+                if let Some(ft) = &mut app.file_tree { ft.move_down(25); }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(ft) = &mut app.file_tree {
-                    ft.select_row(mouse.row as usize);
-                    let path = ft.selected_path().map(|p| p.to_path_buf());
+                    let path = ft.click_row(mouse.row as usize);
                     if let Some(p) = path {
                         if p.is_file() {
                             if let Err(e) = app.open_file(&p) {
                                 app.set_message(format!("Error: {e}"));
                             }
                             app.mode = Mode::Normal;
+                        } else if p.is_dir() {
+                            ft.toggle_selected();
                         }
                     }
                 }

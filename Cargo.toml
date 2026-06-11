@@ -49,7 +49,7 @@ async-lsp-client = "0.2.3"
 tower-lsp = "0.20.0"
 
 # Async (needed for LSP process spawning in the future)
-tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "io-util", "sync"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "fs"] }
 
 # Utilities
 anyhow = "1.0.102"
