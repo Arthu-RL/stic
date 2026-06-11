@@ -31,8 +31,8 @@ impl Editor {
     ///
     /// A default initialized `Editor` core structure.
     pub fn new(config: Config) -> Self {
-        let highlighter = Highlighter::new(&config.ui.theme);
-        let mut ed = Self {
+        let highlighter: Highlighter = Highlighter::new(&config.ui.theme);
+        let mut ed: Editor = Self {
             buffers:     Vec::new(),
             active:      0,
             highlighter,
@@ -52,11 +52,11 @@ impl Editor {
     ///
     /// A blank `Result` confirming successful lookup or filesystem retrieval operations.
     pub fn open_file(&mut self, path: &Path) -> Result<()> {
-        if let Some(idx) = self.buffers.iter().position(|b| b.path.as_deref() == Some(path)) {
+        if let Some(idx) = self.buffers.iter().position(|b: &Buffer| b.path.as_deref() == Some(path)) {
             self.active = idx;
             return Ok(());
         }
-        let buf = Buffer::from_path(path)?;
+        let buf: Buffer = Buffer::from_path(path)?;
         self.buffers.push(buf);
         self.active = self.buffers.len() - 1;
         Ok(())

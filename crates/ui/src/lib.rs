@@ -33,6 +33,7 @@ const BG:          Color = Color::Rgb(25,  29,  38);
 const BG_PANEL:    Color = Color::Rgb(30,  34,  44);
 const BG_ACTIVE:   Color = Color::Rgb(38,  44,  56);
 const BG_LINE_HL:  Color = Color::Rgb(42,  48,  62);
+const SEL_BG:      Color = Color::Rgb(55,  75,  105);
 const FG:          Color = Color::Rgb(200, 210, 220);
 const FG_DIM:      Color = Color::Rgb(90,  105, 125);
 const FG_GUTTER:   Color = Color::Rgb(65,  80,  100);
@@ -50,13 +51,13 @@ const RULER_COL:   Color = Color::Rgb(45,  50,  65);
 /// * `frame` - The terminal screen layout execution frame engine buffer.
 /// * `app` - Mutable reference to the central application execution engine instance.
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let area = frame.area();
+    let area: Rect = frame.area();
 
-    let editor_height = compute_editor_height(area, app) as usize;
+    let editor_height: usize = compute_editor_height(area, app) as usize;
     app.editor.buf_mut().scroll_to_cursor(editor_height);
 
-    let v_constraints = {
-        let mut c = vec![
+    let v_constraints: Vec<Constraint> = {
+        let mut c: Vec<Constraint> = vec![
             Constraint::Length(1),
         ];
         c.push(Constraint::Min(3));
@@ -69,18 +70,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         c
     };
 
-    let v_chunks = Layout::default()
+    let v_chunks: std::rc::Rc<[Rect]> = Layout::default()
         .direction(Direction::Vertical)
         .constraints(v_constraints)
         .split(area);
 
-    let mut row = 0usize;
+    let mut row: usize = 0;
     render_tabbar(frame, app, v_chunks[row]); row += 1;
 
-    let body_area = v_chunks[row]; row += 1;
+    let body_area: Rect = v_chunks[row]; row += 1;
 
-    let h_constraints = {
-        let mut c = vec![];
+    let h_constraints: Vec<Constraint> = {
+        let mut c: Vec<Constraint> = vec![];
         if app.file_tree.is_some() {
             c.push(Constraint::Length(28));
         }
@@ -91,12 +92,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         c
     };
 
-    let h_chunks = Layout::default()
+    let h_chunks: std::rc::Rc<[Rect]> = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(h_constraints)
         .split(body_area);
 
-    let mut col = 0usize;
+    let mut col: usize = 0;
     if app.file_tree.is_some() {
         render_file_tree(frame, app, h_chunks[col]);
         col += 1;
@@ -169,7 +170,7 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
     let in_insert: bool = app.mode == Mode::Insert;
 
     let gutter_w: u16 = if cfg.line_numbers {
-        let digits = buf.line_count().to_string().len().max(3);
+        let digits: usize = buf.line_count().to_string().len().max(3);
         (digits + 2) as u16
     } else {
         0
@@ -201,7 +202,7 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 format!("{:>width$} ", abs_line + 1, width = (gutter_w - 1) as usize)
             };
-            let g_style = if is_cur {
+            let g_style: Style = if is_cur {
                 Style::default().fg(ACCENT).bg(line_bg)
             } else {
                 Style::default().fg(FG_GUTTER).bg(line_bg)
@@ -217,17 +218,21 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let text_x0: u16 = area.left() + gutter_w;
-        let spans: &[editor::HighlightedSpan]    = highlighted.get(abs_line).map(|v: &Vec<editor::HighlightedSpan>| v.as_slice()).unwrap_or(&[]);
+        let spans: &[editor::HighlightedSpan] = highlighted.get(abs_line).map(|v: &Vec<editor::HighlightedSpan>| v.as_slice()).unwrap_or(&[]);
 
-        let ruler    = cfg.ruler_column as u16;
-        let mut col_offset = 0u16;
+        let ruler: u16 = cfg.ruler_column as u16;
+        let mut col_offset: u16 = 0u16;
         'span_loop: for span in spans {
             for ch in span.text.chars() {
                 if ch == '\n' || ch == '\r' { break 'span_loop; }
                 let sx: u16 = text_x0 + col_offset;
                 if sx >= area.right() { break 'span_loop; }
 
-                let bg: Color = if ruler > 0 && col_offset == ruler {
+                let is_selected: bool = buf.in_selection(abs_line, col_offset as usize);
+                
+                let bg: Color = if is_selected {
+                    SEL_BG
+                } else if ruler > 0 && col_offset == ruler {
                     RULER_COL
                 } else {
                     line_bg
@@ -244,9 +249,9 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
                     };
                 }
 
-                let diag_on_col = buf.diags_on_line(abs_line)
+                let diag_on_col: bool = buf.diags_on_line(abs_line)
                     .iter()
-                    .any(|d| d.col == col_offset as usize);
+                    .any(|d: &&buffer::Diagnostic| d.col == col_offset as usize);
                 if diag_on_col {
                     cell_style = cell_style.add_modifier(Modifier::UNDERLINED);
                 }
@@ -259,9 +264,9 @@ fn render_editor(frame: &mut Frame, app: &mut App, area: Rect) {
         }
 
         if is_cur && (cursor_col as u16) >= col_offset {
-            let sx = text_x0 + cursor_col as u16;
+            let sx: u16 = text_x0 + cursor_col as u16;
             if sx < area.right() {
-                let curs_style = if in_insert {
+                let curs_style: Style = if in_insert {
                     Style::default().fg(BG).bg(ACCENT2)
                 } else {
                     Style::default().fg(BG).bg(Color::White)

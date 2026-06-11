@@ -64,6 +64,13 @@ impl FileTreeState {
     pub fn refresh(&mut self) {
         self.entries = walk_dir(&self.root, 0, 3);
     }
+
+    /// Forces select a row
+    pub fn select_row(&mut self, clicked_row: usize) {
+        if !self.entries.is_empty() {
+            self.selected = clicked_row.clamp(0, self.entries.len().saturating_sub(1));
+        }
+    }
 }
 
 /// Recursively discovers filesystem structures down to fixed navigation boundary checkpoints.
@@ -83,13 +90,13 @@ fn walk_dir(dir: &Path, depth: usize, max_depth: usize) -> Vec<(usize, String, s
     let Ok(rd) = std::fs::read_dir(dir) else { return out; };
     let mut entries: Vec<_> = rd.flatten().collect();
     entries.sort_by_key(|e: &std::fs::DirEntry| {
-        let is_file: bool = e.file_type().map(|t| t.is_file()).unwrap_or(true);
+        let is_file: bool = e.file_type().map(|t: std::fs::FileType| t.is_file()).unwrap_or(true);
         (is_file as u8, e.file_name())
     });
     for e in entries {
-        let path = e.path();
-        let name = e.file_name().to_string_lossy().into_owned();
-        let prefix = if path.is_dir() { format!("{}", name) } else { format!("  {}", name) };
+        let path: std::path::PathBuf = e.path();
+        let name: String = e.file_name().to_string_lossy().into_owned();
+        let prefix: String = if path.is_dir() { format!("{}", name) } else { format!("  {}", name) };
         out.push((depth, prefix, path.clone()));
         if path.is_dir() {
             out.extend(walk_dir(&path, depth + 1, max_depth));
@@ -127,6 +134,7 @@ pub struct App {
     pub file_tree: Option<FileTreeState>,
     pub show_terminal: bool,
     pub show_diag: bool,
+    pub clipboard: String,
 }
 
 impl App {
@@ -161,6 +169,7 @@ impl App {
             file_tree,
             show_terminal:   show_term,
             show_diag,
+            clipboard:       String::new(),
         }
     }
 

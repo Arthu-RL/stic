@@ -105,7 +105,7 @@ impl UndoStack {
     ///
     /// An `Option` wrapper containing the extracted `EditRecord`.
     pub fn undo(&mut self) -> Option<EditRecord> {
-        let r = self.past.pop()?;
+        let r: EditRecord = self.past.pop()?;
         self.future.push(r.clone());
         Some(r)
     }
@@ -116,7 +116,7 @@ impl UndoStack {
     ///
     /// An `Option` wrapper containing the extracted `EditRecord`.
     pub fn redo(&mut self) -> Option<EditRecord> {
-        let r = self.future.pop()?;
+        let r: EditRecord = self.future.pop()?;
         self.past.push(r.clone());
         Some(r)
     }
@@ -161,6 +161,7 @@ pub struct Buffer {
     pub scroll_left: usize,
     pub diagnostics: Vec<Diagnostic>,
     undo:            UndoStack,
+    pub selection_anchor: Option<usize>,
 }
 
 impl Buffer {
@@ -180,6 +181,7 @@ impl Buffer {
             scroll_left: 0,
             diagnostics: Vec::new(),
             undo:        UndoStack::new(2_000),
+            selection_anchor: None,
         }
     }
 
@@ -208,6 +210,7 @@ impl Buffer {
             scroll_left: 0,
             diagnostics: Vec::new(),
             undo:        UndoStack::new(2_000),
+            selection_anchor: None,
         })
     }
 
@@ -259,7 +262,7 @@ impl Buffer {
     ///
     /// * `n` - Row transition iteration amount.
     pub fn move_down(&mut self, n: usize) {
-        let max = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.rope.len_lines().saturating_sub(1);
         self.cursor.line = (self.cursor.line + n).min(max);
         self.clamp_col_to_desired();
     }
@@ -291,9 +294,9 @@ impl Buffer {
 
     /// Directs tracker offsets over home line text boundaries.
     pub fn move_line_start(&mut self) {
-        let first_non_ws = self.get_line(self.cursor.line)
+        let first_non_ws: usize = self.get_line(self.cursor.line)
             .chars()
-            .position(|c| !c.is_whitespace())
+            .position(|c: char| !c.is_whitespace())
             .unwrap_or(0);
         if self.cursor.col == first_non_ws {
             self.cursor.set(self.cursor.line, 0);
@@ -304,7 +307,7 @@ impl Buffer {
 
     /// Directs tracker offsets directly to the end boundary of the line.
     pub fn move_line_end(&mut self) {
-        let col = self.line_len(self.cursor.line);
+        let col: usize = self.line_len(self.cursor.line);
         self.cursor.set(self.cursor.line, col);
     }
 
@@ -329,7 +332,7 @@ impl Buffer {
     ///
     /// * `page_height` - Viewport line window length metric.
     pub fn move_page_down(&mut self, page_height: usize) {
-        let max = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.rope.len_lines().saturating_sub(1);
         self.cursor.line = (self.cursor.line + page_height).min(max);
         self.scroll_top  = (self.scroll_top + page_height).min(max);
         self.clamp_col_to_desired();
@@ -337,8 +340,8 @@ impl Buffer {
 
     /// Steps tracking focus point increments over forward text clusters.
     pub fn move_word_forward(&mut self) {
-        let total = self.rope.len_chars();
-        let mut idx = self.char_idx();
+        let total: usize = self.rope.len_chars();
+        let mut idx: usize = self.char_idx();
         while idx < total && self.char_at(idx).map(|c| c.is_whitespace()).unwrap_or(true) {
             idx += 1;
         }
@@ -350,13 +353,13 @@ impl Buffer {
 
     /// Steps tracking focus point decrements over backward text clusters.
     pub fn move_word_backward(&mut self) {
-        let mut idx = self.char_idx();
+        let mut idx: usize = self.char_idx();
         if idx == 0 { return; }
         idx -= 1;
-        while idx > 0 && self.char_at(idx).map(|c| c.is_whitespace()).unwrap_or(true) {
+        while idx > 0 && self.char_at(idx).map(|c: char| c.is_whitespace()).unwrap_or(true) {
             idx -= 1;
         }
-        while idx > 0 && !self.char_at(idx - 1).map(|c| c.is_whitespace()).unwrap_or(true) {
+        while idx > 0 && !self.char_at(idx - 1).map(|c: char| c.is_whitespace()).unwrap_or(true) {
             idx -= 1;
         }
         self.set_cursor_by_char(idx);
@@ -375,6 +378,24 @@ impl Buffer {
         self.scroll_to_cursor(visible_height);
     }
 
+    /// Jumps directly onto specific row and character column elements, updating window view alignment.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - Target row index position.
+    /// * `col` - Target character column offset.
+    /// * `visible_height` - Active terminal sizing dimension height tracking value.
+    pub fn goto_line_col(&mut self, line: usize, col: usize, visible_height: usize) {
+        let max_line: usize = self.rope.len_lines().saturating_sub(1);
+        self.cursor.line = line.min(max_line);
+        
+        let max_col: usize = self.line_len(self.cursor.line);
+        self.cursor.col = col.min(max_col);
+        self.cursor.desired_col = self.cursor.col;
+        
+        self.scroll_to_cursor(visible_height);
+    }
+
     /// Warps current tracking assignments back to absolute zero file starts.
     pub fn goto_file_start(&mut self) {
         self.cursor.set(0, 0);
@@ -384,7 +405,7 @@ impl Buffer {
 
     /// Warps current tracking assignments down to total absolute file ends.
     pub fn goto_file_end(&mut self) {
-        let last = self.rope.len_lines().saturating_sub(1);
+        let last: usize = self.rope.len_lines().saturating_sub(1);
         self.cursor.set(last, 0);
     }
 
@@ -432,7 +453,7 @@ impl Buffer {
     /// * `use_spaces` - Flag forcing spacer pads over actual literal character code maps.
     pub fn insert_tab(&mut self, tab_size: usize, use_spaces: bool) {
         if use_spaces {
-            let pad = tab_size - (self.cursor.col % tab_size);
+            let pad: usize = tab_size - (self.cursor.col % tab_size);
             self.insert_str(&" ".repeat(pad));
         } else {
             self.insert_char('\t');
@@ -442,14 +463,14 @@ impl Buffer {
     /// Triggers character extractions directly preceding active tracker coordinates.
     pub fn delete_backward(&mut self) {
         if self.cursor.col == 0 && self.cursor.line == 0 { return; }
-        let before  = self.cursor.as_tuple();
+        let before: (usize, usize)  = self.cursor.as_tuple();
         self.move_left();
-        let idx     = self.char_idx();
+        let idx: usize     = self.char_idx();
         if idx >= self.rope.len_chars() { return; }
-        let deleted = self.rope.char(idx).to_string();
+        let deleted: String = self.rope.char(idx).to_string();
         self.rope.remove(idx..idx + 1);
         self.modified = true;
-        let after   = self.cursor.as_tuple();
+        let after: (usize, usize)   = self.cursor.as_tuple();
         self.undo.push(EditRecord {
             char_idx:      idx,
             inserted:      String::new(),
@@ -461,10 +482,10 @@ impl Buffer {
 
     /// Triggers active targeted cursor element character drops.
     pub fn delete_forward(&mut self) {
-        let idx = self.char_idx();
+        let idx: usize = self.char_idx();
         if idx >= self.rope.len_chars() { return; }
-        let before  = self.cursor.as_tuple();
-        let deleted = self.rope.char(idx).to_string();
+        let before: (usize, usize)  = self.cursor.as_tuple();
+        let deleted: String = self.rope.char(idx).to_string();
         self.rope.remove(idx..idx + 1);
         self.modified = true;
         self.clamp_col_to_desired();
@@ -479,14 +500,14 @@ impl Buffer {
 
     /// Clears string content elements running up from cursors out toward line endings.
     pub fn delete_to_eol(&mut self) {
-        let start    = self.char_idx();
-        let line_end = self.rope.line_to_char(self.cursor.line)
+        let start: usize    = self.char_idx();
+        let line_end: usize = self.rope.line_to_char(self.cursor.line)
             + self.rope.line(self.cursor.line).len_chars().saturating_sub(1);
         if start >= line_end { return; }
         let deleted: String = self.rope.chars_at(start).take(line_end - start).collect();
         self.rope.remove(start..line_end);
         self.modified = true;
-        let pos = self.cursor.as_tuple();
+        let pos: (usize, usize) = self.cursor.as_tuple();
         self.undo.push(EditRecord {
             char_idx: start, inserted: String::new(), deleted,
             cursor_before: pos, cursor_after: pos,
@@ -495,10 +516,10 @@ impl Buffer {
 
     /// Copies and reprints the active string line elements exactly underneath.
     pub fn duplicate_line(&mut self) {
-        let line_str = self.get_line(self.cursor.line);
-        let eol_idx  = self.rope.line_to_char(self.cursor.line)
+        let line_str: String = self.get_line(self.cursor.line);
+        let eol_idx: usize  = self.rope.line_to_char(self.cursor.line)
             + self.rope.line(self.cursor.line).len_chars();
-        let insert_str = if line_str.ends_with('\n') {
+        let insert_str: String = if line_str.ends_with('\n') {
             line_str.clone()
         } else {
             format!("\n{}", line_str)
@@ -512,7 +533,7 @@ impl Buffer {
     pub fn undo(&mut self) {
         if let Some(r) = self.undo.undo() {
             if !r.inserted.is_empty() {
-                let end = (r.char_idx + r.inserted.chars().count()).min(self.rope.len_chars());
+                let end: usize = (r.char_idx + r.inserted.chars().count()).min(self.rope.len_chars());
                 if r.char_idx < end { self.rope.remove(r.char_idx..end); }
             }
             if !r.deleted.is_empty() {
@@ -527,7 +548,7 @@ impl Buffer {
     pub fn redo(&mut self) {
         if let Some(r) = self.undo.redo() {
             if !r.deleted.is_empty() {
-                let end = (r.char_idx + r.deleted.chars().count()).min(self.rope.len_chars());
+                let end: usize = (r.char_idx + r.deleted.chars().count()).min(self.rope.len_chars());
                 if r.char_idx < end { self.rope.remove(r.char_idx..end); }
             }
             if !r.inserted.is_empty() {
@@ -563,19 +584,19 @@ impl Buffer {
     /// An `Option` tuple holding sequence pairs for matching rows and character columns.
     pub fn search_forward(&self, query: &str) -> Option<(usize, usize)> {
         if query.is_empty() { return None; }
-        let content = self.rope.to_string().to_lowercase();
-        let q       = query.to_lowercase();
-        let start   = (self.char_idx() + 1).min(self.rope.len_chars());
-        let start_b = self.rope.char_to_byte(start);
+        let content: String = self.rope.to_string().to_lowercase();
+        let q: String       = query.to_lowercase();
+        let start: usize   = (self.char_idx() + 1).min(self.rope.len_chars());
+        let start_b: usize = self.rope.char_to_byte(start);
 
-        let hit = content[start_b..].find(&q)
-            .map(|o| start_b + o)
+        let hit: Option<usize> = content[start_b..].find(&q)
+            .map(|o: usize| start_b + o)
             .or_else(|| content.find(&q));
 
-        hit.map(|byte_idx| {
-            let char_idx = self.rope.byte_to_char(byte_idx);
-            let line     = self.rope.char_to_line(char_idx);
-            let col      = char_idx - self.rope.line_to_char(line);
+        hit.map(|byte_idx: usize| {
+            let char_idx: usize = self.rope.byte_to_char(byte_idx);
+            let line: usize = self.rope.char_to_line(char_idx);
+            let col: usize = char_idx - self.rope.line_to_char(line);
             (line, col)
         })
     }
@@ -591,17 +612,17 @@ impl Buffer {
     /// An `Option` tuple holding sequence pairs for matching rows and character columns.
     pub fn search_backward(&self, query: &str) -> Option<(usize, usize)> {
         if query.is_empty() { return None; }
-        let content = self.rope.to_string().to_lowercase();
-        let q       = query.to_lowercase();
-        let end_b   = self.rope.char_to_byte(self.char_idx());
+        let content: String = self.rope.to_string().to_lowercase();
+        let q: String = query.to_lowercase();
+        let end_b: usize = self.rope.char_to_byte(self.char_idx());
 
-        let hit = content[..end_b].rfind(&q)
+        let hit: Option<usize> = content[..end_b].rfind(&q)
             .or_else(|| content.rfind(&q));
 
-        hit.map(|byte_idx| {
-            let char_idx = self.rope.byte_to_char(byte_idx);
-            let line     = self.rope.char_to_line(char_idx);
-            let col      = char_idx - self.rope.line_to_char(line);
+        hit.map(|byte_idx: usize| {
+            let char_idx: usize = self.rope.byte_to_char(byte_idx);
+            let line: usize = self.rope.char_to_line(char_idx);
+            let col: usize = char_idx - self.rope.line_to_char(line);
             (line, col)
         })
     }
@@ -612,12 +633,12 @@ impl Buffer {
     ///
     /// * `visible_height` - Viewport terminal height dimensions constraint metric.
     pub fn scroll_to_cursor(&mut self, visible_height: usize) {
-        let off = 5_usize;
+        let off: usize = 5;
         if self.cursor.line < self.scroll_top.saturating_add(off) {
             self.scroll_top = self.cursor.line.saturating_sub(off);
         }
         if visible_height > 0 {
-            let bottom = self.scroll_top + visible_height.saturating_sub(off + 1);
+            let bottom: usize = self.scroll_top + visible_height.saturating_sub(off + 1);
             if self.cursor.line > bottom {
                 self.scroll_top = self.cursor.line + off + 1 - visible_height;
             }
@@ -636,8 +657,8 @@ impl Buffer {
     #[inline]
     pub fn line_len(&self, line: usize) -> usize {
         if line >= self.rope.len_lines() { return 0; }
-        let s   = self.rope.line(line);
-        let len = s.len_chars();
+        let s: ropey::RopeSlice<'_>   = self.rope.line(line);
+        let len: usize = s.len_chars();
         if len > 0 && s.char(len - 1) == '\n' { len - 1 } else { len }
     }
 
@@ -649,8 +670,8 @@ impl Buffer {
     #[inline]
     pub fn char_idx(&self) -> usize {
         if self.rope.len_lines() == 0 { return 0; }
-        let line_start = self.rope.line_to_char(self.cursor.line);
-        let max_col    = self.line_len(self.cursor.line);
+        let line_start: usize = self.rope.line_to_char(self.cursor.line);
+        let max_col: usize = self.line_len(self.cursor.line);
         line_start + self.cursor.col.min(max_col)
     }
 
@@ -674,15 +695,15 @@ impl Buffer {
     ///
     /// * `idx` - Single target file position pointer.
     fn set_cursor_by_char(&mut self, idx: usize) {
-        let idx  = idx.min(self.rope.len_chars());
-        let line = self.rope.char_to_line(idx);
-        let col  = idx - self.rope.line_to_char(line);
+        let idx: usize  = idx.min(self.rope.len_chars());
+        let line: usize = self.rope.char_to_line(idx);
+        let col: usize  = idx - self.rope.line_to_char(line);
         self.cursor.set(line, col);
     }
 
     /// Enforces tracking safety boundaries constraint fields on text column lengths.
     fn clamp_col_to_desired(&mut self) {
-        let max        = self.line_len(self.cursor.line);
+        let max: usize = self.line_len(self.cursor.line);
         self.cursor.col = self.cursor.desired_col.min(max);
     }
 
@@ -733,5 +754,96 @@ impl Buffer {
         let mut v: Vec<_> = self.diagnostics.iter().filter(|d| d.line == line).collect();
         v.sort_by_key(|d| d.col);
         v
+    }
+
+    /// Evaluates if a specific coordinate point resides within the current active selection block.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - Target row position.
+    /// * `col` - Target column character offset.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the cell coordinates fall inside selection ranges; otherwise, `false`.
+    pub fn in_selection(&self, line: usize, col: usize) -> bool {
+        if let Some(anchor) = self.selection_anchor {
+            if line >= self.rope.len_lines() { return false; }
+            let line_start: usize = self.rope.line_to_char(line);
+            let max_col: usize = self.line_len(line);
+            let current_char_idx: usize = line_start + col.min(max_col);
+            let cursor_char_idx: usize = self.char_idx();
+            let start: usize = anchor.min(cursor_char_idx);
+            let end: usize = anchor.max(cursor_char_idx);
+            current_char_idx >= start && current_char_idx < end
+        } else {
+            false
+        }
+    }
+
+    /// Sets the selection anchor to the current cursor position to begin tracking a selection block.
+    pub fn start_selection(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.char_idx());
+        }
+    }
+
+    /// Clears the active selection boundary state.
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+    }
+
+    /// Deletes the characters currently covered by the active selection, moves the cursor to
+    /// the start of the deleted range, pushes an `EditRecord` onto the undo stack, and clears
+    /// `selection_anchor`.
+    ///
+    /// # Returns
+    ///
+    /// `true` if a non-empty selection was deleted; `false` if there was no active selection or
+    /// the anchor and cursor coincided (nothing to delete).
+    pub fn delete_selection(&mut self) -> bool {
+        let anchor: usize = match self.selection_anchor {
+            Some(a) => a,
+            None    => return false,
+        };
+        let cursor_idx: usize = self.char_idx();
+        let start: usize = anchor.min(cursor_idx);
+        let end: usize   = anchor.max(cursor_idx);
+        if start == end {
+            self.selection_anchor = None;
+            return false;
+        }
+        let before: (usize, usize) = self.cursor.as_tuple();
+        let deleted: String = self.rope.slice(start..end).to_string();
+        self.rope.remove(start..end);
+        self.modified = true;
+        self.set_cursor_by_char(start);
+        let after: (usize, usize) = self.cursor.as_tuple();
+        self.undo.push(EditRecord {
+            char_idx:      start,
+            inserted:      String::new(),
+            deleted,
+            cursor_before: before,
+            cursor_after:  after,
+        });
+        self.selection_anchor = None;
+        true
+    }
+
+    /// Extracts and retrieves the currently selected text block substring.
+    ///
+    /// # Returns
+    ///
+    /// An `Option` containing the selected text string fragment.
+    pub fn selected_text(&self) -> Option<String> {
+        let anchor: usize = self.selection_anchor?;
+        let cursor: usize = self.char_idx();
+        let start: usize = anchor.min(cursor);
+        let end: usize = anchor.max(cursor);
+        if start == end {
+            None
+        } else {
+            Some(self.rope.slice(start..end).to_string())
+        }
     }
 }
