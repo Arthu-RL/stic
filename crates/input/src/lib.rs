@@ -156,8 +156,8 @@ impl InputHandler for NormalHandler {
             KeyCode::Char('e') | KeyCode::End            => app.editor.buf_mut().move_line_end(),
             KeyCode::Char('g') if !ctrl                  => app.editor.buf_mut().goto_file_start(),
             KeyCode::Char('G')                           => app.editor.buf_mut().goto_file_end(),
-            KeyCode::Char('a')                           => app.editor.buf_mut().move_word_forward(),
-            KeyCode::Char('d') if !ctrl                  => app.editor.buf_mut().move_word_backward(),
+            KeyCode::Char('a')                           => app.editor.buf_mut().move_word_backward(),
+            KeyCode::Char('d') if !ctrl                  => app.editor.buf_mut().move_word_forward(),
             KeyCode::PageUp                              => app.editor.buf_mut().move_page_up(20),
             KeyCode::PageDown                            => app.editor.buf_mut().move_page_down(20),
 
