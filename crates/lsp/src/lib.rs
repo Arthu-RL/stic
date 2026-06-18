@@ -196,7 +196,7 @@ impl Session {
                 }).await;
                 match res {
                     Ok(Some(h)) => {
-                        let md = hover_to_markdown(h.contents);
+                        let md: String = hover_to_markdown(h.contents);
                         let _ = tx.send(LspEvent::Hover { markdown: md });
                     }
                     Ok(None)  => {}
@@ -253,9 +253,9 @@ fn handle_server_msg(msg: ServerMessage, tx: &mpsc::UnboundedSender<LspEvent>) {
             let Some(p)   = n.params                      else { return };
             let Some(uri_s)   = p["uri"].as_str()         else { return };
             let Some(raw)     = p["diagnostics"].as_array() else { return };
-            let uri = Url::parse(uri_s)
+            let uri: Url = Url::parse(uri_s)
                 .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap());
-            let items = raw.iter().filter_map(|d| Some(LspDiagnostic {
+            let items: Vec<LspDiagnostic> = raw.iter().filter_map(|d| Some(LspDiagnostic {
                 line:     d["range"]["start"]["line"].as_u64()?      as u32,
                 col:      d["range"]["start"]["character"].as_u64()? as u32,
                 severity: d["severity"].as_u64().unwrap_or(2)        as u8,

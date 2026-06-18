@@ -263,9 +263,10 @@ impl InputHandler for InsertHandler {
 
         match key.code {
             KeyCode::Esc => {
-                app.editor.buf_mut().clear_selection();
-                if app.editor.buf().cursor.col > 0 {
-                    app.editor.buf_mut().move_left();
+                let buf: &mut buffer::Buffer = app.editor.buf_mut();
+                buf.clear_selection();
+                if buf.cursor.col > 0 {
+                    buf.move_left();
                 }
                 app.mode = Mode::Normal;
             }
@@ -566,7 +567,8 @@ impl InputHandler for FileTreeHandler {
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(ft) = &mut app.file_tree {
-                    let path = ft.click_row(mouse.row as usize);
+                    let relative_row = (mouse.row as usize).saturating_sub(1);
+                    let path = ft.click_row(relative_row);
                     if let Some(p) = path {
                         if p.is_file() {
                             if let Err(e) = app.open_file(&p) {
