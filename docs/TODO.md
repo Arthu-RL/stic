@@ -32,15 +32,6 @@ See the [README](../README.md) for what works today.
 | **Per-language theme overrides** | **Not implemented** | Single global theme only |
 | Live theme switch without restart | **Not implemented** | Change config and reopen editor |
 
-### Adding other languages (future)
-
-Today Stic only uses syntect’s **bundled** syntax set. C3 (`.c3`) is not included.
-Planned approach:
-
-1. Ship or download a `.sublime-syntax` for C3 (or any language).
-2. Add config, e.g. `syntax.extra_paths = ["~/.config/stic/syntaxes"]`.
-3. Load extra syntaxes at startup alongside `SyntaxSet::load_defaults_newlines()`.
-
 ---
 
 ## Editor & UI
