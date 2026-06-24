@@ -1,4 +1,6 @@
 use std::io;
+use std::panic;
+use std::path::Path;
 
 use anyhow::Result;
 use crossterm::{
@@ -18,36 +20,25 @@ async fn main() -> Result<()> {
             .ok();
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    panic::set_hook(Box::new(|info: &panic::PanicHookInfo<'_>| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::event::DisableMouseCapture);
+        let _ = execute!(io::stdout(), crossterm::cursor::Show);
+        eprintln!("Application panicked critical error: {info}");
+    }));
 
     // Transitions the standard terminal window into a dedicated terminal application window
     // https://docs.rs/crossterm/0.29.0/crossterm/terminal/index.html#raw-mode
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
+    let mut stdout: io::Stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let backend: CrosstermBackend<io::Stdout> = CrosstermBackend::new(stdout);
+    let mut terminal: Terminal<CrosstermBackend<io::Stdout>> = Terminal::new(backend)?;
 
-    // Initialize app state
-    let mut app = app::App::new();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result: std::prelude::v1::Result<(), anyhow::Error> = run_app(&mut terminal, args).await;
 
-    for path in &args {
-        if let Err(e) = app.open_file(std::path::Path::new(path)) {
-            app.set_message(format!("Error opening {path}: {e}"));
-        }
-    }
-
-    // Main application loop
-    while !app.should_quit {
-        // Let ui::render method draw the ui
-        terminal.draw(|f| ui::render(f, &mut app))?;
-        // Process input commands
-        input::handle_input(&mut app)?;
-        // Updated the screen
-        app.tick();
-    }
-
-    // Reset terminal default settings
+    // Terminal Reset
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
@@ -55,5 +46,25 @@ async fn main() -> Result<()> {
         crossterm::event::DisableMouseCapture
     )?;
     terminal.show_cursor()?;
+
+    // Propagate whatever result came out of the app execution
+    result
+}
+
+async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: Vec<String>) -> Result<()> {
+    let mut app: app::App = app::App::new();
+
+    for path in &args {
+        if let Err(e) = app.open_file(Path::new(path)) {
+            app.set_message(format!("Error opening {path}: {e}"));
+        }
+    }
+
+    while !app.should_quit {
+        terminal.draw(|f: &mut Frame<'_>| ui::render(f, &mut app))?;
+        input::handle_input(&mut app)?;
+        app.tick();
+    }
+
     Ok(())
 }

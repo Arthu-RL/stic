@@ -36,7 +36,57 @@ pub enum Mode {
 }
 
 
-// ── File-tree data model ──────────────────────────────────────────────────────
+/// Width and height of a single rendered UI component in terminal cells.
+///
+/// Values are zero-initialized and become accurate after the first render
+/// frame; callers should treat zero as "not yet known" and fall back to a
+/// sensible default (use [`ComponentSize::height_or`] /
+/// [`ComponentSize::width_or`] for that).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ComponentSize {
+    pub width:  u16,
+    pub height: u16,
+}
+
+impl ComponentSize {
+    /// Returns `height` as `usize`, or `fallback` when the value is zero.
+    pub fn height_or(self, fallback: usize) -> usize {
+        if self.height == 0 { fallback } else { self.height as usize }
+    }
+
+    /// Returns `width` as `usize`, or `fallback` when the value is zero.
+    pub fn width_or(self, fallback: usize) -> usize {
+        if self.width == 0 { fallback } else { self.width as usize }
+    }
+}
+
+/// Cached terminal layout dimensions written by the `ui` crate on every
+/// render frame and read by the `input` crate to drive scroll-sensitive
+/// operations.
+///
+/// All fields are zero until the first render frame populates them, so
+/// callers should always supply a sensible fallback via
+/// [`ComponentSize::height_or`].
+#[derive(Debug, Clone, Default)]
+pub struct LayoutSizes {
+    /// Full terminal screen.
+    pub screen:           ComponentSize,
+    /// One-row tab bar at the top.
+    pub tabbar:           ComponentSize,
+    /// Main editor pane content area.
+    pub editor:           ComponentSize,
+    /// File-tree side panel; zero dimensions when the panel is hidden.
+    pub file_tree:        ComponentSize,
+    /// Diagnostics side panel; zero dimensions when the panel is hidden.
+    pub diagnostics:      ComponentSize,
+    /// Integrated terminal panel; zero dimensions when the panel is hidden.
+    pub terminal:         ComponentSize,
+    /// Status bar row; zero dimensions when the bar is hidden.
+    pub status_bar:       ComponentSize,
+    /// Visible list rows inside the command-palette popup; zero when closed.
+    pub cmd_palette_list: ComponentSize,
+}
+
 
 /// A single entry returned by an async directory scan.
 #[derive(Debug, Clone)]
@@ -154,7 +204,7 @@ impl FileTreeState {
     /// The selected entry's absolute `PathBuf`, or `None` when the tree
     /// is still loading.
     pub fn selected_path(&self) -> Option<PathBuf> {
-        let flat = self.visible_flat();
+        let flat: Vec<(usize, &FileTreeNode)> = self.visible_flat();
         flat.get(self.selected).map(|(_, n)| n.entry.path.clone())
     }
 
@@ -174,10 +224,10 @@ impl FileTreeState {
     ///
     /// * `visible_height` - Number of rows the panel can display.
     pub fn move_down(&mut self, visible_height: usize) {
-        let max = self.visible_flat().len().saturating_sub(1);
+        let max: usize = self.visible_flat().len().saturating_sub(1);
         if self.selected < max {
             self.selected += 1;
-            let bottom = self.scroll_top + visible_height.saturating_sub(1);
+            let bottom: usize = self.scroll_top + visible_height.saturating_sub(1);
             if self.selected > bottom {
                 self.scroll_top += 1;
             }
@@ -193,14 +243,14 @@ impl FileTreeState {
     /// - Files are silently ignored.
     pub fn toggle_selected(&mut self) {
         let (depth, path, is_dir) = {
-            let flat = self.visible_flat();
+            let flat: Vec<(usize, &FileTreeNode)> = self.visible_flat();
             let Some((d, node)) = flat.get(self.selected) else { return };
             if !node.entry.is_dir { return; }
             (*d, node.entry.path.clone(), true)
         };
         if !is_dir || depth >= 3 { return; }
 
-        let needs_load;
+        let needs_load: bool;
         if let Some(node) = find_node_mut(&mut self.nodes, &path) {
             if node.expanded {
                 node.expanded = false;
@@ -214,10 +264,10 @@ impl FileTreeState {
         }
 
         if needs_load {
-            let tx  = self.scan_tx.clone();
-            let dir = path.clone();
+            let tx: tokio::sync::mpsc::UnboundedSender<ScanResult>  = self.scan_tx.clone();
+            let dir: PathBuf = path.clone();
             tokio::spawn(async move {
-                let entries = scan_dir(&dir).await;
+                let entries: Vec<FsEntry> = scan_dir(&dir).await;
                 let _ = tx.send(ScanResult { parent: dir, entries });
             });
         }
@@ -228,7 +278,7 @@ impl FileTreeState {
     /// that is visible in the current flat view.
     pub fn collapse_or_jump_parent(&mut self) {
         let (path, is_dir, expanded) = {
-            let flat = self.visible_flat();
+            let flat: Vec<(usize, &FileTreeNode)> = self.visible_flat();
             let Some((_, node)) = flat.get(self.selected) else { return };
             (node.entry.path.clone(), node.entry.is_dir, node.expanded)
         };
@@ -242,8 +292,8 @@ impl FileTreeState {
 
         // Move selection to the parent directory row if it is visible.
         if let Some(parent) = path.parent() {
-            let parent = parent.to_path_buf();
-            let flat = self.visible_flat();
+            let parent: PathBuf = parent.to_path_buf();
+            let flat: Vec<(usize, &FileTreeNode)> = self.visible_flat();
             if let Some(idx) = flat.iter().position(|(_, n)| n.entry.path == parent) {
                 self.selected = idx;
                 if self.selected < self.scroll_top {
@@ -275,10 +325,10 @@ impl FileTreeState {
         self.nodes.clear();
         self.selected   = 0;
         self.scroll_top = 0;
-        let tx  = self.scan_tx.clone();
-        let dir = self.root.clone();
+        let tx: tokio::sync::mpsc::UnboundedSender<ScanResult>  = self.scan_tx.clone();
+        let dir: PathBuf = self.root.clone();
         tokio::spawn(async move {
-            let entries = scan_dir(&dir).await;
+            let entries: Vec<FsEntry> = scan_dir(&dir).await;
             let _ = tx.send(ScanResult { parent: dir, entries });
         });
     }
@@ -300,11 +350,9 @@ impl FileTreeState {
     }
 }
 
-// ── File-tree helpers ─────────────────────────────────────────────────────────
-
 /// Converts a list of `FsEntry` values into a fresh list of leaf `FileTreeNode`s.
 fn make_nodes(entries: Vec<FsEntry>) -> Vec<FileTreeNode> {
-    entries.into_iter().map(|e| FileTreeNode {
+    entries.into_iter().map(|e: FsEntry| FileTreeNode {
         entry:    e,
         expanded: false,
         children: None,
@@ -321,12 +369,12 @@ async fn scan_dir(dir: &Path) -> Vec<FsEntry> {
     let Ok(mut rd) = tokio::fs::read_dir(dir).await else { return vec![] };
     let mut entries: Vec<FsEntry> = Vec::new();
     while let Ok(Some(e)) = rd.next_entry().await {
-        let name = e.file_name().to_string_lossy().into_owned();
+        let name: String = e.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') { continue; }
         let Ok(meta) = e.metadata().await else { continue };
         entries.push(FsEntry { is_dir: meta.is_dir(), path: e.path(), name });
     }
-    entries.sort_unstable_by_key(|e| (!e.is_dir, e.name.to_lowercase()));
+    entries.sort_unstable_by_key(|e: &FsEntry| (!e.is_dir, e.name.to_lowercase()));
     entries
 }
 
@@ -411,6 +459,8 @@ pub struct App {
     pub hover:           HoverOverlay,
     /// LSP manager; `None` when no servers are configured.
     pub lsp:             Option<LspManager>,
+    /// Terminal layout dimensions written by the UI crate every render frame.
+    pub layout:          LayoutSizes,
 
     /// Remaining ticks before the transient status message is cleared.
     message_ticks: u8,
@@ -439,7 +489,7 @@ impl App {
         // Initialise the LSP manager; individual server sessions are spawned
         // lazily on the first `send` call for a given file extension.
         let lsp: Option<LspManager> = if !config.lsp.servers.is_empty() {
-            let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let root: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
             Some(LspManager::new(config.lsp.servers.clone(), root))
         } else {
             None
@@ -461,6 +511,7 @@ impl App {
             clipboard:       String::new(),
             hover:           HoverOverlay::default(),
             lsp,
+            layout:          LayoutSizes::default(),
         }
     }
 
@@ -536,7 +587,7 @@ impl App {
                 LspEvent::Definition { path, line, col } => {
                     let _ = self.editor.open_file(&path);
                     self.editor.buf_mut().cursor.set(line as usize, col as usize);
-                    self.editor.buf_mut().scroll_to_cursor(24);
+                    self.editor.buf_mut().scroll_to_cursor(self.layout.editor.height_or(24), 0);
                     self.set_message(format!("Definition at {}:{}", line + 1, col + 1));
                 }
 
@@ -609,7 +660,7 @@ impl App {
     /// * `path_str` - Raw filename string entered by the user; leading/trailing
     ///   whitespace is trimmed automatically.
     pub fn save_as_file(&mut self, path_str: &str) {
-        let path_str = path_str.trim();
+        let path_str: &str = path_str.trim();
         if path_str.is_empty() {
             self.set_message("Save As: cancelled (empty filename)");
             return;
@@ -684,10 +735,10 @@ impl App {
     /// The response is delivered asynchronously and processed in a future
     /// call to [`App::tick`], at which point `self.hover` is populated.
     fn lsp_hover(&mut self) {
-        let ext  = self.editor.active_extension();
-        let path = self.editor.buf().path.clone();
-        let line = self.editor.buf().cursor.line as u32;
-        let col  = self.editor.buf().cursor.col  as u32;
+        let ext: String  = self.editor.active_extension();
+        let path: Option<PathBuf> = self.editor.buf().path.clone();
+        let line: u32 = self.editor.buf().cursor.line as u32;
+        let col: u32  = self.editor.buf().cursor.col  as u32;
         match (path, &mut self.lsp) {
             (Some(path), Some(lsp)) => {
                 lsp.send(&ext, LspAction::Hover { path, line, col });
@@ -709,10 +760,10 @@ impl App {
     /// The response is delivered asynchronously; when received it moves the
     /// cursor and opens the target file via [`App::tick`].
     fn lsp_goto_definition(&mut self) {
-        let ext  = self.editor.active_extension();
-        let path = self.editor.buf().path.clone();
-        let line = self.editor.buf().cursor.line as u32;
-        let col  = self.editor.buf().cursor.col  as u32;
+        let ext: String  = self.editor.active_extension();
+        let path: Option<PathBuf> = self.editor.buf().path.clone();
+        let line: u32 = self.editor.buf().cursor.line as u32;
+        let col: u32  = self.editor.buf().cursor.col  as u32;
         match (path, &mut self.lsp) {
             (Some(path), Some(lsp)) => {
                 lsp.send(&ext, LspAction::GotoDef { path, line, col });
@@ -744,10 +795,10 @@ impl App {
     /// Advances to the next occurrence of the current search query, wrapping
     /// past end-of-file if necessary.
     pub fn search_next(&mut self) {
-        let q = self.search.query.clone();
+        let q: String = self.search.query.clone();
         if let Some((line, col)) = self.editor.buf().search_forward(&q) {
             self.editor.buf_mut().cursor.set(line, col);
-            self.editor.buf_mut().scroll_to_cursor(24);
+            self.editor.buf_mut().scroll_to_cursor(self.layout.editor.height_or(24), 0);
             self.search.last_match = Some((line, col));
         } else {
             self.set_message(format!("Pattern not found: {q}"));
@@ -757,10 +808,10 @@ impl App {
     /// Moves to the previous occurrence of the current search query, wrapping
     /// past the beginning of the file if necessary.
     pub fn search_prev(&mut self) {
-        let q = self.search.query.clone();
+        let q: String = self.search.query.clone();
         if let Some((line, col)) = self.editor.buf().search_backward(&q) {
             self.editor.buf_mut().cursor.set(line, col);
-            self.editor.buf_mut().scroll_to_cursor(24);
+            self.editor.buf_mut().scroll_to_cursor(self.layout.editor.height_or(24), 0);
             self.search.last_match = Some((line, col));
         } else {
             self.set_message(format!("Pattern not found: {}", q));

@@ -270,7 +270,7 @@ impl Buffer {
     ///
     /// * `n` - Row transition iteration amount.
     pub fn move_down(&mut self, n: usize) {
-        let max: usize = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.line_count().saturating_sub(1);
         self.cursor.line = (self.cursor.line + n).min(max);
         self.clamp_col_to_desired();
     }
@@ -293,7 +293,7 @@ impl Buffer {
         if self.cursor.col < len {
             self.cursor.col         += 1;
             self.cursor.desired_col  = self.cursor.col;
-        } else if self.cursor.line + 1 < self.rope.len_lines() {
+        } else if self.cursor.line + 1 < self.line_count() {
             self.cursor.line        += 1;
             self.cursor.col          = 0;
             self.cursor.desired_col  = 0;
@@ -340,7 +340,7 @@ impl Buffer {
     ///
     /// * `page_height` - Viewport line window length metric.
     pub fn move_page_down(&mut self, page_height: usize) {
-        let max: usize = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.line_count().saturating_sub(1);
         self.cursor.line = (self.cursor.line + page_height).min(max);
         self.scroll_top  = (self.scroll_top + page_height).min(max);
         self.clamp_col_to_desired();
@@ -379,11 +379,12 @@ impl Buffer {
     ///
     /// * `line` - Target row index position.
     /// * `visible_height` - Active terminal sizing dimension height tracking value.
+    /// * `margin` - Margin around the cursor to scroll to.
     pub fn goto_line(&mut self, line: usize, visible_height: usize) {
-        let max: usize = self.rope.len_lines().saturating_sub(1);
+        let max: usize = self.line_count().saturating_sub(1);
         self.cursor.line = line.min(max);
         self.clamp_col_to_desired();
-        self.scroll_to_cursor(visible_height);
+        self.scroll_to_cursor(visible_height, 0);
     }
 
     /// Jumps directly onto specific row and character column elements, updating window view alignment.
@@ -393,15 +394,16 @@ impl Buffer {
     /// * `line` - Target row index position.
     /// * `col` - Target character column offset.
     /// * `visible_height` - Active terminal sizing dimension height tracking value.
-    pub fn goto_line_col(&mut self, line: usize, col: usize, visible_height: usize) {
-        let max_line: usize = self.rope.len_lines().saturating_sub(1);
+    /// * `margin` - Margin around the cursor to scroll to.
+    pub fn goto_line_col(&mut self, line: usize, col: usize, visible_height: usize, margin: usize) {
+        let max_line: usize = self.line_count().saturating_sub(1);
         self.cursor.line = line.min(max_line);
         
         let max_col: usize = self.line_len(self.cursor.line);
         self.cursor.col = col.min(max_col);
         self.cursor.desired_col = self.cursor.col;
-        
-        self.scroll_to_cursor(visible_height);
+
+        self.scroll_to_cursor(visible_height, margin);
     }
 
     /// Warps current tracking assignments back to absolute zero file starts.
@@ -413,7 +415,7 @@ impl Buffer {
 
     /// Warps current tracking assignments down to total absolute file ends.
     pub fn goto_file_end(&mut self) {
-        let last: usize = self.rope.len_lines().saturating_sub(1);
+        let last: usize = self.line_count().saturating_sub(1);
         self.cursor.set(last, 0);
     }
 
@@ -647,17 +649,44 @@ impl Buffer {
     /// # Arguments
     ///
     /// * `visible_height` - Viewport terminal height dimensions constraint metric.
-    pub fn scroll_to_cursor(&mut self, visible_height: usize) {
-        let off: usize = 5;
-        if self.cursor.line < self.scroll_top.saturating_add(off) {
-            self.scroll_top = self.cursor.line.saturating_sub(off);
+    /// * `margin` - Margin around the cursor to scroll to.
+    pub fn scroll_to_cursor(&mut self, visible_height: usize, margin: usize) {
+        if self.cursor.line < self.scroll_top.saturating_add(margin) {
+            self.scroll_top = self.cursor.line.saturating_sub(margin);
         }
         if visible_height > 0 {
-            let bottom: usize = self.scroll_top + visible_height.saturating_sub(off + 1);
+            let bottom: usize = self.scroll_top + visible_height.saturating_sub(margin + 1);
             if self.cursor.line > bottom {
-                self.scroll_top = self.cursor.line + off + 1 - visible_height;
+                self.scroll_top = (self.cursor.line + margin + 1).saturating_sub(visible_height);
             }
         }
+    }
+
+    /// Scrolls the viewport down by `n` rows without moving the cursor.
+    ///
+    /// `scroll_top` is clamped to `line_count − visible_height` so the last
+    /// page of the document fills the window rather than leaving blank rows
+    /// below the final line.  The cursor position is intentionally unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `n`              - Number of rows to scroll.
+    /// * `visible_height` - Number of rows the editor pane can display.
+    pub fn scroll_viewport_down(&mut self, n: usize, visible_height: usize) {
+        let max_top: usize = self.line_count().saturating_sub(visible_height);
+        self.scroll_top = (self.scroll_top + n).min(max_top);
+    }
+
+    /// Scrolls the viewport up by `n` rows without moving the cursor.
+    ///
+    /// `scroll_top` is clamped to `0`.  The cursor position is intentionally
+    /// unchanged.
+    ///
+    /// # Arguments
+    ///
+    /// * `n` - Number of rows to scroll.
+    pub fn scroll_viewport_up(&mut self, n: usize) {
+        self.scroll_top = self.scroll_top.saturating_sub(n);
     }
 
     /// Calculates row lengths without terminal newline trailing elements.
@@ -671,7 +700,7 @@ impl Buffer {
     /// Character count layout length parameters.
     #[inline]
     pub fn line_len(&self, line: usize) -> usize {
-        if line >= self.rope.len_lines() { return 0; }
+        if line >= self.line_count() { return 0; }
         let s: ropey::RopeSlice<'_>   = self.rope.line(line);
         let len: usize = s.len_chars();
         if len > 0 && s.char(len - 1) == '\n' { len - 1 } else { len }
@@ -684,7 +713,7 @@ impl Buffer {
     /// The absolute single sequence numerical pointer coordinates.
     #[inline]
     pub fn char_idx(&self) -> usize {
-        if self.rope.len_lines() == 0 { return 0; }
+        if self.line_count() == 0 { return 0; }
         let line_start: usize = self.rope.line_to_char(self.cursor.line);
         let max_col: usize = self.line_len(self.cursor.line);
         line_start + self.cursor.col.min(max_col)
@@ -739,9 +768,7 @@ impl Buffer {
     ///
     /// A heap-allocated copy of all text in the buffer.
     #[inline]
-    pub fn text(&self) -> String {
-        self.rope.to_string()
-    }
+    pub fn text(&self) -> String { self.rope.to_string() }
 
     /// Captures fully copies of text tracking sequences.
     ///
@@ -753,7 +780,7 @@ impl Buffer {
     ///
     /// Owned instance copy text wrapper elements.
     pub fn get_line(&self, n: usize) -> String {
-        if n >= self.rope.len_lines() { return String::new(); }
+        if n >= self.line_count() { return String::new(); }
         self.rope.line(n).to_string()
     }
 
@@ -764,8 +791,8 @@ impl Buffer {
     /// Extracted slice format extension types or default fallback empty values.
     pub fn extension(&self) -> String {
         self.path.as_ref()
-            .and_then(|p| p.extension())
-            .map(|e| e.to_string_lossy().into_owned())
+            .and_then(|p: &PathBuf| p.extension())
+            .map(|e: &std::ffi::OsStr| e.to_string_lossy().into_owned())
             .unwrap_or_default()
     }
 
@@ -779,8 +806,8 @@ impl Buffer {
     ///
     /// Sorted context sequence vectors.
     pub fn diags_on_line(&self, line: usize) -> Vec<&Diagnostic> {
-        let mut v: Vec<_> = self.diagnostics.iter().filter(|d| d.line == line).collect();
-        v.sort_by_key(|d| d.col);
+        let mut v: Vec<_> = self.diagnostics.iter().filter(|d: &&Diagnostic| d.line == line).collect();
+        v.sort_by_key(|d: &&Diagnostic| d.col);
         v
     }
 
@@ -796,7 +823,7 @@ impl Buffer {
     /// `true` if the cell coordinates fall inside selection ranges; otherwise, `false`.
     pub fn in_selection(&self, line: usize, col: usize) -> bool {
         if let Some(anchor) = self.selection_anchor {
-            if line >= self.rope.len_lines() { return false; }
+            if line >= self.line_count() { return false; }
             let line_start: usize = self.rope.line_to_char(line);
             let max_col: usize = self.line_len(line);
             let current_char_idx: usize = line_start + col.min(max_col);
@@ -862,12 +889,12 @@ impl Buffer {
     /// Deletes the entire line the cursor is on, adjusting the cursor to stay
     /// within the remaining document bounds and pushing an undo record.
     pub fn delete_line(&mut self) {
-        let total = self.rope.len_lines();
+        let total: usize = self.line_count();
         if total == 0 { return; }
 
-        let line       = self.cursor.line;
-        let line_start = self.rope.line_to_char(line);
-        let line_end   = if line + 1 < total {
+        let line: usize       = self.cursor.line;
+        let line_start: usize = self.rope.line_to_char(line);
+        let line_end: usize   = if line + 1 < total {
             self.rope.line_to_char(line + 1)
         } else {
             self.rope.len_chars()
@@ -881,7 +908,7 @@ impl Buffer {
         self.modified = true;
         self.version  = self.version.wrapping_add(1);
 
-        let new_total = self.rope.len_lines();
+        let new_total: usize = self.line_count();
         if new_total > 0 && self.cursor.line >= new_total {
             self.cursor.line = new_total - 1;
         }

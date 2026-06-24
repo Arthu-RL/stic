@@ -55,7 +55,6 @@ pub fn handle_input(app: &mut App) -> Result<()> {
     match event::read()? {
         Event::Key(key) => {
             let ctrl:  bool = key.modifiers.contains(KeyModifiers::CONTROL);
-            let shift: bool = key.modifiers.contains(KeyModifiers::SHIFT);
 
             // Global: toggle Command Palette from any mode.
             if ctrl && key.code == KeyCode::Char('p') {
@@ -65,13 +64,6 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                     app.command_palette.reset();
                     app.mode = Mode::CommandPalette;
                 }
-                return Ok(());
-            }
-
-            // Global: save active file then force-quit.
-            if ctrl && shift && (key.code == KeyCode::Char('Q') || key.code == KeyCode::Char('q')) {
-                app.save_file();
-                app.should_quit = true;
                 return Ok(());
             }
 
@@ -158,8 +150,8 @@ impl InputHandler for NormalHandler {
             KeyCode::Char('G')                           => app.editor.buf_mut().goto_file_end(),
             KeyCode::Char('a')                           => app.editor.buf_mut().move_word_backward(),
             KeyCode::Char('d') if !ctrl                  => app.editor.buf_mut().move_word_forward(),
-            KeyCode::PageUp                              => app.editor.buf_mut().move_page_up(20),
-            KeyCode::PageDown                            => app.editor.buf_mut().move_page_down(20),
+            KeyCode::PageUp                              => app.editor.buf_mut().move_page_up(app.layout.editor.height_or(20)),
+            KeyCode::PageDown                            => app.editor.buf_mut().move_page_down(app.layout.editor.height_or(20)),
 
             KeyCode::Char('s') if ctrl                   => app.save_file(),
             KeyCode::Char('z') if ctrl                   => app.editor.buf_mut().undo(),
@@ -171,7 +163,7 @@ impl InputHandler for NormalHandler {
                 }
             }
             KeyCode::Char('v') if ctrl                   => {
-                let text = app.clipboard.clone();
+                let text: String = app.clipboard.clone();
                 if !text.is_empty() {
                     app.editor.buf_mut().delete_selection();
                     app.editor.buf_mut().insert_str(&text);
@@ -207,45 +199,46 @@ impl InputHandler for NormalHandler {
             _ => {}
         }
 
-        app.editor.buf_mut().scroll_to_cursor(24);
+        app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+        let vis_h: usize = app.layout.editor.height_or(24);
         match mouse.kind {
-            MouseEventKind::ScrollUp   => app.editor.buf_mut().move_up(3),
-            MouseEventKind::ScrollDown => app.editor.buf_mut().move_down(3),
+            MouseEventKind::ScrollUp   => app.editor.buf_mut().scroll_viewport_up(3),
+            MouseEventKind::ScrollDown => app.editor.buf_mut().scroll_viewport_down(3, vis_h),
+            
             MouseEventKind::Down(MouseButton::Left) => {
-                let editor = app.editor.buf_mut();
-
+                let editor: &mut buffer::Buffer = app.editor.buf_mut();
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
-
+    
                 let gutter_w: usize = if app.config.editor.line_numbers {
                     let digits: usize = editor.line_count().to_string().len().max(3);
                     digits + 2
                 } else {
                     0
                 };
-
+    
                 let target_col: usize = (mouse.column as usize).saturating_sub(gutter_w) + editor.scroll_left;
-
+    
                 editor.clear_selection();
-                editor.goto_line_col(target_line, target_col, 24);
-                editor.start_selection();
+                editor.goto_line_col(target_line, target_col, vis_h, 0);
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                let editor = app.editor.buf_mut();
-
+                let editor: &mut buffer::Buffer = app.editor.buf_mut();
+                editor.start_selection();
+    
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
-
+    
                 let gutter_w: usize = if app.config.editor.line_numbers {
                     let digits: usize = editor.line_count().to_string().len().max(3);
                     digits + 2
                 } else {
                     0
                 };
-
+    
                 let target_col: usize = (mouse.column as usize).saturating_sub(gutter_w) + editor.scroll_left;
-                editor.goto_line_col(target_line, target_col, 24);
+                editor.goto_line_col(target_line, target_col, vis_h, 0);
             }
             _ => {}
         }
@@ -347,12 +340,12 @@ impl InputHandler for InsertHandler {
             KeyCode::Right => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_right();      }
             KeyCode::Up    => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_up(1);   app.mode = Mode::Normal; }
             KeyCode::Down  => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_down(1); app.mode = Mode::Normal; }
-            KeyCode::PageUp   => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_page_up(20);   }
-            KeyCode::PageDown => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_page_down(20); }
+            KeyCode::PageUp   => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_page_up(app.layout.editor.height_or(20));   }
+            KeyCode::PageDown => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_page_down(app.layout.editor.height_or(20)); }
 
             _ => {}
         }
-        app.editor.buf_mut().scroll_to_cursor(24);
+        app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
@@ -396,7 +389,7 @@ impl CommandHandler {
             // :<number>  –– Jump to line.
             s if s.parse::<usize>().is_ok() => {
                 let n: usize = s.parse().unwrap();
-                app.editor.buf_mut().goto_line(n.saturating_sub(1), 24);
+                app.editor.buf_mut().goto_line(n.saturating_sub(1), app.layout.editor.height_or(24));
             }
             _ => app.set_message(format!("Unknown command: :{cmd}")),
         }
@@ -436,10 +429,10 @@ impl InputHandler for SearchHandler {
             }
             KeyCode::Char(c) => {
                 app.prompt_input.push(c);
-                let q = app.prompt_input.clone();
+                let q: String = app.prompt_input.clone();
                 if let Some((line, col)) = app.editor.buf().search_forward(&q) {
                     app.editor.buf_mut().cursor.set(line, col);
-                    app.editor.buf_mut().scroll_to_cursor(24);
+                    app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
                     app.search.last_match = Some((line, col));
                 }
             }
@@ -462,7 +455,7 @@ impl InputHandler for GotoLineHandler {
                 app.prompt_input.clear();
                 app.mode = Mode::Normal;
                 if let Ok(n) = input.parse::<usize>() {
-                    app.editor.buf_mut().goto_line(n.saturating_sub(1), 24);
+                    app.editor.buf_mut().goto_line(n.saturating_sub(1), app.layout.editor.height_or(24));
                 } else {
                     app.set_message(format!("Not a line number: '{input}'"));
                 }
@@ -484,14 +477,14 @@ impl InputHandler for CommandPaletteHandler {
             KeyCode::Esc       => { app.command_palette.reset(); app.mode = Mode::Normal; }
             KeyCode::Enter     => {
                 if let Some(id) = app.command_palette.selected_id() {
-                    let id = id.to_string();
+                    let id: String = id.to_string();
                     app.command_palette.reset();
                     app.mode = Mode::Normal;
                     app.execute_palette_command(&id);
                 }
             }
             KeyCode::Up        => app.command_palette.move_up(),
-            KeyCode::Down      => app.command_palette.move_down(12),
+            KeyCode::Down      => app.command_palette.move_down(app.layout.cmd_palette_list.height_or(10)),
             KeyCode::Char(c)   => app.command_palette.push_char(c),
             KeyCode::Backspace => app.command_palette.pop_char(),
             _ => {}
@@ -520,7 +513,7 @@ impl InputHandler for FileTreeHandler {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.toggle_file_tree(),
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(25); }
+                if let Some(ft) = &mut app.file_tree { ft.move_down(app.layout.file_tree.height_or(25)); }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
@@ -532,9 +525,9 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.collapse_or_jump_parent(); }
             }
             KeyCode::Enter => {
-                let path = app.file_tree.as_mut().and_then(|ft| {
+                let path: Option<std::path::PathBuf> = app.file_tree.as_mut().and_then(|ft| {
                     // Check whether selected item is a file; toggle dirs here too.
-                    let p = ft.selected_path()?;
+                    let p: std::path::PathBuf = ft.selected_path()?;
                     if p.is_dir() {
                         ft.toggle_selected();
                         None // directories don't open in the editor
@@ -563,12 +556,12 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(25); }
+                if let Some(ft) = &mut app.file_tree { ft.move_down(app.layout.file_tree.height_or(25)); }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(ft) = &mut app.file_tree {
-                    let relative_row = (mouse.row as usize).saturating_sub(1);
-                    let path = ft.click_row(relative_row);
+                    let relative_row: usize = (mouse.row as usize).saturating_sub(1) + ft.scroll_top;
+                    let path: Option<std::path::PathBuf> = ft.click_row(relative_row);
                     if let Some(p) = path {
                         if p.is_file() {
                             if let Err(e) = app.open_file(&p) {

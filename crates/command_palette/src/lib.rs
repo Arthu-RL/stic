@@ -128,7 +128,7 @@ impl CommandPalette {
     pub fn move_down(&mut self, visible_h: usize) {
         if self.selected + 1 < self.filtered.len() {
             self.selected += 1;
-            let bottom = self.scroll_top + visible_h.saturating_sub(1);
+            let bottom: usize = self.scroll_top + visible_h.saturating_sub(1);
             if self.selected > bottom {
                 self.scroll_top += 1;
             }
@@ -165,7 +165,7 @@ impl CommandPalette {
 
     /// Updates internal command indices matching the user query across label, ID, and category fields.
     fn refilter(&mut self) {
-        let q = self.input.as_str();
+        let q: &str = self.input.as_str();
         self.filtered = (0..COMMANDS.len())
             .filter(|&i| {
                 let cmd = &COMMANDS[i];

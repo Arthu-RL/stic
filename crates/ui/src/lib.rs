@@ -25,7 +25,7 @@ use ratatui::{
 };
 
 
-use app::{App, Mode};
+use app::{App, ComponentSize, Mode};
 use buffer::DiagSeverity;
 
 
@@ -53,9 +53,6 @@ const RULER_COL:   Color = Color::Rgb(45,  50,  65);
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area: Rect = frame.area();
 
-    let editor_height: usize = compute_editor_height(area, app) as usize;
-    app.editor.buf_mut().scroll_to_cursor(editor_height);
-
     let v_constraints: Vec<Constraint> = {
         let mut c: Vec<Constraint> = vec![
             Constraint::Length(1),
@@ -74,9 +71,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints(v_constraints)
         .split(area);
-
     let mut row: usize = 0;
-    render_tabbar(frame, app, v_chunks[row]); row += 1;
+    let tabbar_rect: Rect = v_chunks[row]; row += 1;
+    render_tabbar(frame, app, tabbar_rect);
 
     let body_area: Rect = v_chunks[row]; row += 1;
 
@@ -98,22 +95,41 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(body_area);
 
     let mut col: usize = 0;
-    if app.file_tree.is_some() {
-        render_file_tree(frame, app, h_chunks[col]);
-        col += 1;
-    }
-    render_editor(frame, app, h_chunks[col]);
-    col += 1;
-    if app.show_diag {
-        render_diagnostics(frame, app, h_chunks[col]);
-    }
 
-    if app.show_terminal {
-        render_terminal_panel(frame, app, v_chunks[row]); row += 1;
-    }
-    if app.config.ui.show_status_bar {
-        render_status_bar(frame, app, v_chunks[row]);
-    }
+    let file_tree_rect: Option<Rect> = if app.file_tree.is_some() {
+        let r: Rect = h_chunks[col]; col += 1;
+        render_file_tree(frame, app, r);
+        Some(r)
+    } else {
+        None
+    };
+
+    let editor_rect: Rect = h_chunks[col]; col += 1;
+    render_editor(frame, app, editor_rect);
+
+    let diag_rect: Option<Rect> = if app.show_diag {
+        let r: Rect = h_chunks[col];
+        render_diagnostics(frame, app, r);
+        Some(r)
+    } else {
+        None
+    };
+
+    let terminal_rect: Option<Rect> = if app.show_terminal {
+        let r: Rect = v_chunks[row]; row += 1;
+        render_terminal_panel(frame, app, r);
+        Some(r)
+    } else {
+        None
+    };
+
+    let status_bar_rect: Option<Rect> = if app.config.ui.show_status_bar {
+        let r: Rect = v_chunks[row];
+        render_status_bar(frame, app, r);
+        Some(r)
+    } else {
+        None
+    };
 
     if app.mode == Mode::CommandPalette {
         app.command_palette.render(frame);
@@ -123,6 +139,26 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Mode::Search | Mode::GotoLine | Mode::Command | Mode::SaveAs => render_prompt(frame, app, area),
         _ => {}
     }
+
+    let cs = |r: Rect| ComponentSize { width: r.width, height: r.height };
+
+    app.layout.screen      = cs(area);
+    app.layout.tabbar      = cs(tabbar_rect);
+    app.layout.editor      = cs(editor_rect);
+    app.layout.file_tree   = file_tree_rect .map(cs).unwrap_or_default();
+    app.layout.diagnostics = diag_rect      .map(cs).unwrap_or_default();
+    app.layout.terminal    = terminal_rect  .map(cs).unwrap_or_default();
+    app.layout.status_bar  = status_bar_rect.map(cs).unwrap_or_default();
+
+    let palette_popup_h: u16 = area.height * 60 / 100;
+    let palette_popup_w: u16 = area.width  * 55 / 100;
+    app.layout.cmd_palette_list = ComponentSize {
+        width:  palette_popup_w.saturating_sub(2),
+        height: palette_popup_h.saturating_sub(5),
+    };
+
+    let _ = col;
+    let _ = row;
 }
 
 
@@ -310,8 +346,8 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
 
     let Some(ft) = &app.file_tree else { return };
 
-    let flat  = ft.visible_flat();
-    let total = flat.len();
+    let flat: Vec<(usize, &app::FileTreeNode)>  = ft.visible_flat();
+    let total: usize = flat.len();
 
     if total == 0 {
         // Show a spinner-style hint while the initial scan is in progress.
@@ -321,9 +357,9 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let visible_h = inner.height as usize;
+    let visible_h: usize = inner.height as usize;
     // Ensure scroll_top is sane (read-only here; mutation happens in move_up/down).
-    let scroll_top = ft.scroll_top.min(total.saturating_sub(1));
+    let scroll_top: usize = ft.scroll_top.min(total.saturating_sub(1));
 
     let items: Vec<ListItem> = flat
         .iter()
@@ -364,7 +400,7 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         .map(ListItem::new)
         .collect();
 
-    let list = List::new(items).style(Style::default().bg(BG_PANEL));
+    let list: List<'_> = List::new(items).style(Style::default().bg(BG_PANEL));
     frame.render_widget(list, inner);
 }
 
@@ -548,23 +584,4 @@ fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
     frame.set_cursor_position((r.left() + text.len() as u16, r.top()));
-}
-
-
-/// Evaluates active visible panels to calculate remaining line height metrics.
-///
-/// # Arguments
-///
-/// * `area` - Full raw coordinate window wrapper parameters block.
-/// * `app` - State memory model structure tracing visible properties.
-///
-/// # Returns
-///
-/// Calculated vertical dimension spans remaining for central workspaces.
-fn compute_editor_height(area: Rect, app: &App) -> u16 {
-    let mut h: u16 = area.height;
-    h = h.saturating_sub(1);
-    if app.config.ui.show_status_bar { h = h.saturating_sub(1); }
-    if app.show_terminal { h = h.saturating_sub(10); }
-    h
 }
