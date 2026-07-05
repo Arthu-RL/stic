@@ -152,7 +152,8 @@ impl InputHandler for NormalHandler {
             KeyCode::Char('d') if !ctrl                  => app.editor.buf_mut().move_word_forward(),
             KeyCode::PageUp                              => app.editor.buf_mut().move_page_up(app.layout.editor.height_or(20)),
             KeyCode::PageDown                            => app.editor.buf_mut().move_page_down(app.layout.editor.height_or(20)),
-
+            
+            KeyCode::Char('s') if !ctrl                  => app.editor.buf_mut().move_down(1),
             KeyCode::Char('s') if ctrl                   => app.save_file(),
             KeyCode::Char('z') if ctrl                   => app.editor.buf_mut().undo(),
             KeyCode::Char('y') if ctrl                   => app.editor.buf_mut().redo(),
@@ -181,6 +182,7 @@ impl InputHandler for NormalHandler {
             KeyCode::Char('b') if ctrl                   => app.toggle_file_tree(),
             KeyCode::Char('t') if ctrl                   => app.show_terminal = !app.show_terminal,
             KeyCode::Char('d') if ctrl                   => app.show_diag = !app.show_diag,
+            KeyCode::Char('w') if !ctrl                  => app.editor.buf_mut().move_up(1),
             KeyCode::Char('w') if ctrl                   => app.editor.close_active(),
             KeyCode::Char('n') if ctrl                   => app.editor.new_buffer(),
             KeyCode::Char('q') if ctrl                   => app.try_quit(),
@@ -287,7 +289,7 @@ impl InputHandler for InsertHandler {
                         }
                     }
                     'v' => {
-                        let text = app.clipboard.clone();
+                        let text: String = app.clipboard.clone();
                         if !text.is_empty() {
                             app.editor.buf_mut().delete_selection();
                             app.editor.buf_mut().insert_str(&text);
