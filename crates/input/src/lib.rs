@@ -207,39 +207,53 @@ impl InputHandler for NormalHandler {
         match mouse.kind {
             MouseEventKind::ScrollUp   => app.editor.buf_mut().scroll_viewport_up(3),
             MouseEventKind::ScrollDown => app.editor.buf_mut().scroll_viewport_down(3, vis_h),
-            
+
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor: &mut buffer::Buffer = app.editor.buf_mut();
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
-    
+
                 let gutter_w: usize = if app.config.editor.line_numbers {
                     let digits: usize = editor.line_count().to_string().len().max(3);
                     digits + 2
                 } else {
                     0
                 };
-    
-                let target_col: usize = (mouse.column as usize).saturating_sub(gutter_w) + editor.scroll_left;
-    
+
+                let editor_left: usize = app.layout.file_tree.width as usize;
+                let target_col: usize  = (mouse.column as usize)
+                    .saturating_sub(editor_left + gutter_w)
+                    + editor.scroll_left;
+
                 editor.clear_selection();
                 editor.goto_line_col(target_line, target_col, vis_h, 0);
             }
+
             MouseEventKind::Drag(MouseButton::Left) => {
                 let editor: &mut buffer::Buffer = app.editor.buf_mut();
-                editor.start_selection();
-    
+
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
-    
+
                 let gutter_w: usize = if app.config.editor.line_numbers {
                     let digits: usize = editor.line_count().to_string().len().max(3);
                     digits + 2
                 } else {
                     0
                 };
-    
-                let target_col: usize = (mouse.column as usize).saturating_sub(gutter_w) + editor.scroll_left;
+
+                let editor_left: usize = app.layout.file_tree.width as usize;
+                let target_col: usize  = (mouse.column as usize)
+                    .saturating_sub(editor_left + gutter_w)
+                    + editor.scroll_left;
+
+                let pre_char_idx: usize = editor.char_idx();
+                let pre_pos: (usize, usize) = (editor.cursor.line, editor.cursor.col);
                 editor.goto_line_col(target_line, target_col, vis_h, 0);
+                let moved: bool = (editor.cursor.line, editor.cursor.col) != pre_pos;
+                if moved && editor.selection_anchor.is_none() {
+                    editor.selection_anchor = Some(pre_char_idx);
+                }
             }
+
             _ => {}
         }
     }
@@ -513,7 +527,8 @@ impl InputHandler for FileTreeHandler {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => app.toggle_file_tree(),
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(app.layout.file_tree.height_or(25)); }
+                let inner_h: usize = app.layout.file_tree.height_or(26).saturating_sub(1);
+                if let Some(ft) = &mut app.file_tree { ft.move_down(inner_h); }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
@@ -556,12 +571,14 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
             }
             MouseEventKind::ScrollDown => {
-                if let Some(ft) = &mut app.file_tree { ft.move_down(app.layout.file_tree.height_or(25)); }
+                let inner_h: usize = app.layout.file_tree.height_or(26).saturating_sub(1);
+                if let Some(ft) = &mut app.file_tree { ft.move_down(inner_h); }
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(ft) = &mut app.file_tree {
-                    let relative_row: usize = (mouse.row as usize).saturating_sub(1) + ft.scroll_top;
-                    let path: Option<std::path::PathBuf> = ft.click_row(relative_row);
+
+                    let viewport_row: usize = (mouse.row as usize).saturating_sub(2);
+                    let path: Option<std::path::PathBuf> = ft.click_row(viewport_row);
                     if let Some(p) = path {
                         if p.is_file() {
                             if let Err(e) = app.open_file(&p) {

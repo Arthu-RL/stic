@@ -61,7 +61,7 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: Ve
     }
 
     while !app.should_quit {
-        terminal.draw(|f: &mut Frame<'_>| ui::render(f, &mut app))?;
+        terminal.draw(|f: &mut Frame<'_>| ui::Ui::render(f, &mut app))?;
         input::handle_input(&mut app)?;
         app.tick();
     }

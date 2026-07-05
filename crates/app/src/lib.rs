@@ -303,20 +303,23 @@ impl FileTreeState {
         }
     }
 
-    /// Sets the selection to the row nearest `terminal_row` and returns the
-    /// path of the newly selected entry (for double-click-style open).
+    /// Moves the selection to `viewport_row` (0 = first currently visible item)
+    /// and returns the path of the newly selected entry.
+    ///
+    /// `scroll_top` is added internally so callers must pass a **viewport-relative**
+    /// row, not an absolute flat-list index or a raw terminal row.
     ///
     /// # Arguments
     ///
-    /// * `terminal_row` - Raw terminal row from a mouse event.
+    /// * `viewport_row` - 0-based row within the visible portion of the tree.
     ///
     /// # Returns
     ///
     /// The selected entry's path after updating the selection.
-    pub fn click_row(&mut self, terminal_row: usize) -> Option<PathBuf> {
+    pub fn click_row(&mut self, viewport_row: usize) -> Option<PathBuf> {
         let visible_count = self.visible_flat().len();
         if visible_count == 0 { return None; }
-        self.selected = (self.scroll_top + terminal_row).min(visible_count - 1);
+        self.selected = (self.scroll_top + viewport_row).min(visible_count - 1);
         self.selected_path()
     }
 
