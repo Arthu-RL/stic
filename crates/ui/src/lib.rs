@@ -151,6 +151,10 @@ impl Ui {
             _ => {}
         }
 
+        // Floating overlays: hover doc and completion popup.
+        Self::render_hover_overlay(frame, app, area);
+        Self::render_completions_popup(frame, app, area);
+
         // Store measured layout sizes for the input crate 
         app.layout.screen      = Self::component_size(area);
         app.layout.tabbar      = Self::component_size(tabbar_rect);
@@ -581,5 +585,151 @@ impl Ui {
     #[inline]
     fn component_size(r: Rect) -> ComponentSize {
         ComponentSize { width: r.width, height: r.height }
+    }
+
+    /// Returns the cursor's screen `(x, y)` position within the full terminal area.
+    ///
+    /// Row 0 is the tab bar; the editor body starts at row 1.  The gutter and
+    /// file-tree panel widths are added to derive the correct column.
+    fn cursor_screen_pos(app: &App) -> (u16, u16) {
+        let buf        = app.editor.buf();
+        let gutter_w: u16 = if app.config.editor.line_numbers {
+            (buf.line_count().to_string().len().max(3) + 2) as u16
+        } else {
+            0
+        };
+        let ft_w:   u16 = app.layout.file_tree.width;
+        let row_off: u16 = buf.cursor.line.saturating_sub(buf.scroll_top) as u16;
+        let col_off: u16 = buf.cursor.col.saturating_sub(buf.scroll_left) as u16;
+        let cx = ft_w + gutter_w + col_off;
+        let cy = 1 + row_off; // +1 for the tab bar
+        (cx, cy)
+    }
+
+    /// Renders the LSP hover-documentation floating overlay.
+    ///
+    /// The popup appears above the cursor when there is room, otherwise below.
+    /// It is dismissed whenever `hover.visible` is `false`.
+    fn render_hover_overlay(frame: &mut Frame, app: &App, area: Rect) {
+        if !app.hover.visible || app.hover.content.is_empty() {
+            return;
+        }
+
+        let (cx, cy) = Self::cursor_screen_pos(app);
+
+        let lines: Vec<&str> = app.hover.content.lines().take(10).collect();
+        if lines.is_empty() { return; }
+
+        let popup_h: u16 = lines.len() as u16 + 2;
+        let popup_w: u16 = lines.iter()
+            .map(|l| l.len() as u16)
+            .max()
+            .unwrap_or(20)
+            .min(area.width.saturating_sub(4))
+            .max(20);
+
+        let y: u16 = if cy >= popup_h + 1 {
+            cy.saturating_sub(popup_h + 1)
+        } else {
+            cy.saturating_add(1).min(area.bottom().saturating_sub(popup_h))
+        };
+        let x: u16 = cx.min(area.right().saturating_sub(popup_w));
+
+        if popup_h == 0 || popup_w == 0 || y >= area.bottom() || x >= area.right() {
+            return;
+        }
+
+        let popup_rect = Rect {
+            x, y,
+            width:  popup_w,
+            height: popup_h,
+        };
+
+        frame.render_widget(Clear, popup_rect);
+
+        let text: Vec<Line> = lines.iter()
+            .map(|l| Line::from(Span::styled(*l, Style::default().fg(FG))))
+            .collect();
+
+        let p = Paragraph::new(text)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(FG_DIM))
+                .style(Style::default().bg(BG_PANEL)));
+        frame.render_widget(p, popup_rect);
+    }
+
+    /// Renders the LSP completion popup.
+    ///
+    /// Shows up to 8 items in a floating list below (or above) the cursor.
+    /// The selected row is highlighted with [`BG_ACTIVE`].  A short kind badge
+    /// (e.g. `fn`, `var`, `kw`) is shown on the right when available.
+    fn render_completions_popup(frame: &mut Frame, app: &App, area: Rect) {
+        if !app.completions.visible || app.completions.items.is_empty() {
+            return;
+        }
+
+        let (cx, cy) = Self::cursor_screen_pos(app);
+
+        const MAX_VISIBLE: usize = 8;
+        let item_count: usize = app.completions.items.len().min(MAX_VISIBLE);
+        let popup_h: u16      = item_count as u16 + 2; // +2 for border
+        let popup_w: u16      = 38_u16.min(area.width / 2).max(20);
+
+        let y: u16 = if cy + popup_h + 1 <= area.bottom() {
+            cy + 1
+        } else {
+            cy.saturating_sub(popup_h)
+        };
+        let x: u16 = cx.min(area.right().saturating_sub(popup_w));
+
+        if popup_h == 0 || popup_w == 0 || y >= area.bottom() || x >= area.right() {
+            return;
+        }
+
+        let popup_rect = Rect { x, y, width: popup_w, height: popup_h };
+        frame.render_widget(Clear, popup_rect);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(ACCENT))
+            .style(Style::default().bg(BG_PANEL));
+        let inner = block.inner(popup_rect);
+        frame.render_widget(block, popup_rect);
+
+        let inner_w = inner.width as usize;
+        let selected = app.completions.selected;
+
+        let items: Vec<ListItem> = app.completions.items.iter().take(MAX_VISIBLE).enumerate()
+            .map(|(i, item)| {
+                let is_sel = i == selected;
+                let bg = if is_sel { BG_ACTIVE } else { BG_PANEL };
+                let fg = if is_sel { Color::White } else { FG };
+                let style = Style::default().fg(fg).bg(bg);
+
+                // Compose label + right-aligned kind badge.
+                let badge = item.kind_label.as_deref().unwrap_or("");
+                let label = &item.label;
+
+                let content: String = if badge.is_empty() {
+                    format!(" {:<width$}", label, width = inner_w.saturating_sub(1))
+                } else {
+                    let badge_str = format!("[{}]", badge);
+                    let label_w = inner_w.saturating_sub(badge_str.len() + 2);
+                    format!(" {:<label_w$}{}", label, badge_str, label_w = label_w)
+                };
+
+                let spans = if is_sel {
+                    vec![Span::styled(content, style.add_modifier(Modifier::BOLD))]
+                } else {
+                    vec![Span::styled(content, style)]
+                };
+
+                ListItem::new(Line::from(spans))
+            })
+            .collect();
+
+        let list = List::new(items);
+        frame.render_widget(list, inner);
     }
 }

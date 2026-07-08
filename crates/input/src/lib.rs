@@ -142,7 +142,7 @@ impl InputHandler for NormalHandler {
 
             KeyCode::Char('h') | KeyCode::Left if !alt  => app.editor.buf_mut().move_left(),
             KeyCode::Char('j') | KeyCode::Up             => app.editor.buf_mut().move_up(1),
-            KeyCode::Char('k') | KeyCode::Down           => app.editor.buf_mut().move_down(1),
+            KeyCode::Char('k') | KeyCode::Down if !ctrl  => app.editor.buf_mut().move_down(1),
             KeyCode::Char('l') | KeyCode::Right if !alt  => app.editor.buf_mut().move_right(),
             KeyCode::Char('q') | KeyCode::Home if !ctrl  => app.editor.buf_mut().move_line_start(),
             KeyCode::Char('e') | KeyCode::End            => app.editor.buf_mut().move_line_end(),
@@ -192,6 +192,7 @@ impl InputHandler for NormalHandler {
 
             KeyCode::F(3)                                => app.search_next(),
             KeyCode::F(12)                               => app.lsp_goto_def_key(),
+            KeyCode::Char('k') if ctrl                   => app.lsp_hover_key(),
 
             KeyCode::Char('x')                           => app.editor.buf_mut().delete_forward(),
             KeyCode::Delete                              => app.editor.buf_mut().delete_forward(),
@@ -270,8 +271,34 @@ impl InputHandler for InsertHandler {
         let ctrl: bool = key.modifiers.contains(KeyModifiers::CONTROL);
         let cfg  = app.config.editor.clone();
 
+        if app.completions.visible {
+            match key.code {
+                KeyCode::Esc => {
+                    app.close_completions();
+                    app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
+                    return;
+                }
+                KeyCode::Up => {
+                    app.completion_prev();
+                    return;
+                }
+                KeyCode::Down => {
+                    app.completion_next();
+                    return;
+                }
+                KeyCode::Tab | KeyCode::Enter => {
+                    app.accept_completion();
+                    app.notify_lsp_change();
+                    app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         match key.code {
             KeyCode::Esc => {
+                app.close_completions();
                 let buf: &mut buffer::Buffer = app.editor.buf_mut();
                 buf.clear_selection();
                 if buf.cursor.col > 0 {
@@ -282,6 +309,9 @@ impl InputHandler for InsertHandler {
 
             KeyCode::Char(c) if ctrl => {
                 match c {
+                    ' ' => {
+                        app.trigger_completions();
+                    }
                     'c' => {
                         if let Some(text) = app.editor.buf().selected_text() {
                             app.clipboard = text;
@@ -314,6 +344,7 @@ impl InputHandler for InsertHandler {
                 }
             }
             KeyCode::Char(c) => {
+                app.close_completions();
                 app.editor.buf_mut().delete_selection();
                 app.editor.buf_mut().insert_char(c);
                 app.notify_lsp_change();
@@ -339,12 +370,14 @@ impl InputHandler for InsertHandler {
                 app.notify_lsp_change();
             }
             KeyCode::Backspace => {
+                app.close_completions();
                 if !app.editor.buf_mut().delete_selection() {
                     app.editor.buf_mut().delete_backward();
                 }
                 app.notify_lsp_change();
             }
             KeyCode::Delete => {
+                app.close_completions();
                 if !app.editor.buf_mut().delete_selection() {
                     app.editor.buf_mut().delete_forward();
                 }
@@ -352,8 +385,8 @@ impl InputHandler for InsertHandler {
             }
             KeyCode::Home  => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_line_start(); }
             KeyCode::End   => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_line_end();   }
-            KeyCode::Left  => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_left();       }
-            KeyCode::Right => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_right();      }
+            KeyCode::Left  => { app.close_completions(); app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_left();       }
+            KeyCode::Right => { app.close_completions(); app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_right();      }
             KeyCode::Up    => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_up(1);   app.mode = Mode::Normal; }
             KeyCode::Down  => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_down(1); app.mode = Mode::Normal; }
             KeyCode::PageUp   => { app.editor.buf_mut().clear_selection(); app.editor.buf_mut().move_page_up(app.layout.editor.height_or(20));   }

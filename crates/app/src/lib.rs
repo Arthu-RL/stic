@@ -431,6 +431,22 @@ pub struct HoverOverlay {
 }
 
 
+/// Inline completion popup state populated by LSP `textDocument/completion` responses.
+#[derive(Debug, Default)]
+pub struct CompletionState {
+    /// Items returned by the last completion request.
+    pub items:        Vec<lsp::CompletionResult>,
+    /// Index of the highlighted entry in `items`.
+    pub selected:     usize,
+    /// Whether the popup should be rendered on the current frame.
+    pub visible:      bool,
+    /// Buffer column at which the completion was requested (used for prefix deletion).
+    pub trigger_col:  usize,
+    /// Buffer line at which the completion was requested.
+    pub trigger_line: usize,
+}
+
+
 /// Root application state: owns all major subsystems and acts as the single
 /// source of truth threaded through the event loop.
 pub struct App {
@@ -460,6 +476,8 @@ pub struct App {
     pub clipboard:       String,
     /// Hover-documentation overlay rendered above the cursor.
     pub hover:           HoverOverlay,
+    /// Inline completion popup driven by LSP `textDocument/completion` responses.
+    pub completions:     CompletionState,
     /// LSP manager; `None` when no servers are configured.
     pub lsp:             Option<LspManager>,
     /// Terminal layout dimensions written by the UI crate every render frame.
@@ -513,6 +531,7 @@ impl App {
             show_diag,
             clipboard:       String::new(),
             hover:           HoverOverlay::default(),
+            completions:     CompletionState::default(),
             lsp,
             layout:          LayoutSizes::default(),
         }
@@ -592,6 +611,17 @@ impl App {
                     self.editor.buf_mut().cursor.set(line as usize, col as usize);
                     self.editor.buf_mut().scroll_to_cursor(self.layout.editor.height_or(24), 0);
                     self.set_message(format!("Definition at {}:{}", line + 1, col + 1));
+                }
+
+                // Completion results – populate and show the popup.
+                LspEvent::Completions { items } => {
+                    if !items.is_empty() {
+                        self.completions.items    = items;
+                        self.completions.selected = 0;
+                        self.completions.visible  = true;
+                    } else {
+                        self.set_message("LSP: no completions at cursor");
+                    }
                 }
 
                 LspEvent::Error(e) => {
@@ -750,13 +780,11 @@ impl App {
         }
     }
 
-    /// Convenience wrapper called from the `F12` keybinding in Normal mode.
-    ///
-    /// Delegates to [`App::lsp_goto_definition`]; exposed as `pub` so the
-    /// input crate can call it without going through the command palette.
-    pub fn lsp_goto_def_key(&mut self) {
-        self.lsp_goto_definition();
-    }
+    /// Public keybinding wrapper for F12 / Ctrl+] go-to-definition.
+    pub fn lsp_goto_def_key(&mut self) { self.lsp_goto_definition(); }
+
+    /// Public keybinding wrapper for hover documentation (Ctrl+K in Normal mode).
+    pub fn lsp_hover_key(&mut self) { self.lsp_hover(); }
 
     /// Sends an LSP go-to-definition request for the symbol under the cursor.
     ///
@@ -775,9 +803,79 @@ impl App {
         }
     }
 
-    /// Placeholder for LSP completion requests; not yet implemented.
+    /// Triggers an LSP completion request at the current cursor position.
+    ///
+    /// Stores the trigger position so that [`accept_completion`] can later
+    /// replace the prefix typed since the request was issued.
+    pub fn trigger_completions(&mut self) {
+        let ext:  String          = self.editor.active_extension();
+        let path: Option<PathBuf> = self.editor.buf().path.clone();
+        let line: u32             = self.editor.buf().cursor.line as u32;
+        let col:  u32             = self.editor.buf().cursor.col  as u32;
+
+        self.completions.trigger_line = line as usize;
+        self.completions.trigger_col  = col  as usize;
+        self.completions.visible      = false;
+        self.completions.items.clear();
+
+        match (path, &mut self.lsp) {
+            (Some(path), Some(lsp)) => {
+                lsp.send(&ext, LspAction::Complete { path, line, col });
+                self.set_message("LSP: requesting completions…");
+            }
+            _ => self.set_message("LSP: no server for this file type"),
+        }
+    }
+
+    /// Accepts the currently selected completion item.
+    ///
+    /// Deletes the prefix typed since the trigger position, inserts the
+    /// selected label, and closes the completion popup.
+    pub fn accept_completion(&mut self) {
+        let Some(item) = self.completions.items.get(self.completions.selected).cloned() else {
+            return;
+        };
+
+        let buf: &mut buffer::Buffer = self.editor.buf_mut();
+        let current_col: usize = buf.cursor.col;
+        let trigger_col: usize = self.completions.trigger_col;
+
+        // Delete the prefix typed since the trigger point.
+        if current_col > trigger_col {
+            for _ in 0..(current_col - trigger_col) {
+                buf.delete_backward();
+            }
+        }
+
+        buf.insert_str(&item.label);
+        self.close_completions();
+    }
+
+    /// Dismisses the completion popup without accepting any item.
+    pub fn close_completions(&mut self) {
+        self.completions.visible = false;
+        self.completions.items.clear();
+        self.completions.selected = 0;
+    }
+
+    /// Moves the completion selection one row up (wraps at the top).
+    pub fn completion_prev(&mut self) {
+        if self.completions.selected > 0 {
+            self.completions.selected -= 1;
+        }
+    }
+
+    /// Moves the completion selection one row down (wraps at the bottom).
+    pub fn completion_next(&mut self) {
+        let max: usize = self.completions.items.len().saturating_sub(1);
+        if self.completions.selected < max {
+            self.completions.selected += 1;
+        }
+    }
+
+    /// Convenience wrapper called from the command palette `"completions"` entry.
     fn lsp_completions(&mut self) {
-        self.set_message("LSP: completions not yet implemented");
+        self.trigger_completions();
     }
 
     /// Sends a full-text `textDocument/didChange` notification to the LSP for

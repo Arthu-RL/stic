@@ -95,6 +95,12 @@ pub struct KeybindingsConfig {
     pub prev_tab:         String,
     pub close_tab:        String,
     pub new_tab:          String,
+    /// LSP: trigger inline completion popup (Insert mode).
+    pub completions:      String,
+    /// LSP: show hover documentation (Normal mode).
+    pub hover_doc:        String,
+    /// LSP: jump to symbol definition (Normal mode / F12).
+    pub go_to_def:        String,
 }
 
 
@@ -202,6 +208,9 @@ impl Default for KeybindingsConfig {
             prev_tab:         "alt+left".into(),
             close_tab:        "ctrl+w".into(),
             new_tab:          "ctrl+n".into(),
+            completions:      "ctrl+space".into(),
+            hover_doc:        "ctrl+k".into(),
+            go_to_def:        "F12".into(),
         }
     }
 }
@@ -263,8 +272,17 @@ impl Config {
 
 
 const DEFAULT_CONFIG_TOML: &str = r#"# Stic Editor – ~/.config/stic/config.toml
-# All values shown are the defaults.  Uncomment and edit to override.
- 
+# All values shown are the compiled defaults.  Uncomment and edit to override.
+#
+# Available themes
+#   Built-in (syntect defaults):
+#     base16-ocean.dark        base16-ocean.light
+#     base16-eighties.dark     base16-mocha.dark
+#     Solarized (dark)         Solarized (light)
+#     InspiredGitHub
+#   Custom (embedded in binary):
+#     Monokai                  High Contrast Dark
+
 [editor]
 tab_size         = 4
 use_spaces       = true
@@ -275,41 +293,72 @@ auto_indent      = true
 scroll_off       = 5
 highlight_line   = true
 ruler_column     = 80
- 
+
 [ui]
-theme            = "base16-ocean.dark"
+theme            = "Monokai"
 show_status_bar  = true
 show_file_tree   = false
 show_terminal    = false
-show_diagnostics = false
- 
+show_diagnostics = true
+
 [keybindings]
-save             = "ctrl+s"
+# Editor
 quit             = "ctrl+q"
 force_quit       = "ctrl+shift+q"
-command_palette  = "ctrl+p"
-toggle_file_tree = "ctrl+b"
-toggle_terminal  = "ctrl+t"
-toggle_diag      = "ctrl+d"
+new_tab          = "ctrl+n"
+close_tab        = "ctrl+w"
+next_tab         = "alt+right"
+prev_tab         = "alt+left"
+undo             = "ctrl+z"
+redo             = "ctrl+y"
 find             = "ctrl+f"
 find_next        = "F3"
 find_prev        = "shift+F3"
 go_to_line       = "ctrl+g"
-undo             = "ctrl+z"
-redo             = "ctrl+y"
-next_tab         = "alt+right"
-prev_tab         = "alt+left"
-close_tab        = "ctrl+w"
-new_tab          = "ctrl+n"
- 
-# LSP server definitions (keyed by file extension)
-# [lsp.servers.rs]
-# command = "rust-analyzer"
-#
+# UI panels
+command_palette  = "ctrl+p"
+toggle_file_tree = "ctrl+b"
+toggle_terminal  = "ctrl+t"
+toggle_diag      = "ctrl+d"
+# LSP
+completions      = "ctrl+space"   # Insert mode – open completion popup
+hover_doc        = "ctrl+k"       # Normal mode – show hover documentation
+go_to_def        = "F12"          # Normal mode – jump to definition
+
+# LSP server definitions
+# Keys are file extensions (no leading dot).
+# Install rust-analyzer:  rustup component add rust-analyzer
+# Install clangd:         sudo apt install clangd  (or brew install llvm)
+
+[lsp.servers.rs]
+command = "rust-analyzer"
+
+[lsp.servers.cpp]
+command = "clangd"
+args    = ["--background-index", "--clang-tidy", "--completion-style=detailed"]
+
+[lsp.servers.c]
+command = "clangd"
+args    = ["--background-index", "--clang-tidy", "--completion-style=detailed"]
+
+[lsp.servers.h]
+command = "clangd"
+args    = ["--background-index"]
+
 # [lsp.servers.py]
 # command = "pylsp"
-#
+
 # [lsp.servers.ts]
 # command = "typescript-language-server"
 # args    = ["--stdio"]
+
+# [lsp.servers.js]
+# command = "typescript-language-server"
+# args    = ["--stdio"]
+
+# [lsp.servers.go]
+# command = "gopls"
+
+# [lsp.servers.lua]
+# command = "lua-language-server"
 "#;

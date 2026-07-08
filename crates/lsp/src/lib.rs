@@ -27,7 +27,8 @@ use lsp_types::{
     notification::{
         DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
     },
-    request::{GotoDefinition, HoverRequest},
+    request::{Completion, GotoDefinition, HoverRequest},
+    CompletionContext, CompletionParams, CompletionResponse, CompletionTriggerKind,
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DidSaveTextDocumentParams, GotoDefinitionParams, GotoDefinitionResponse, HoverContents,
     HoverParams, InitializeParams, LanguageString, MarkedString, PartialResultParams, Position,
@@ -50,8 +51,22 @@ pub enum LspEvent {
     Hover { markdown: String },
     /// Go-to-definition result pointing to a file location.
     Definition { path: PathBuf, line: u32, col: u32 },
+    /// Completion items for the last `Complete` request.
+    Completions { items: Vec<CompletionResult> },
     /// A non-fatal error string from a failed server interaction.
     Error(String),
+}
+
+
+/// A single completion item returned by a language server.
+#[derive(Debug, Clone)]
+pub struct CompletionResult {
+    /// Primary label shown in the completion popup.
+    pub label:      String,
+    /// Short kind badge (e.g. `"fn"`, `"var"`, `"kw"`, `"cls"`).
+    pub kind_label: Option<String>,
+    /// Additional detail string (e.g. the type signature).
+    pub detail:     Option<String>,
 }
 
 
@@ -85,6 +100,8 @@ pub enum LspAction {
     Hover     { path: PathBuf, line: u32, col: u32 },
     /// Request the definition location of the symbol at a cursor position.
     GotoDef   { path: PathBuf, line: u32, col: u32 },
+    /// Request completion items at the given cursor position.
+    Complete  { path: PathBuf, line: u32, col: u32 },
 }
 
 
@@ -198,6 +215,36 @@ impl Session {
                     Ok(Some(h)) => {
                         let md: String = hover_to_markdown(h.contents);
                         let _ = tx.send(LspEvent::Hover { markdown: md });
+                    }
+                    Ok(None)  => {}
+                    Err(e)    => { let _ = tx.send(LspEvent::Error(e.to_string())); }
+                }
+            }
+
+            LspAction::Complete { path, line, col } => {
+                let res = self.server.send_request::<Completion>(CompletionParams {
+                    text_document_position: tdp(&path, line, col),
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                    context: Some(CompletionContext {
+                        trigger_kind: CompletionTriggerKind::INVOKED,
+                        trigger_character: None,
+                    }),
+                }).await;
+                match res {
+                    Ok(Some(resp)) => {
+                        let raw_items = match resp {
+                            CompletionResponse::Array(v) => v,
+                            CompletionResponse::List(l)  => l.items,
+                        };
+                        let items: Vec<CompletionResult> = raw_items.into_iter()
+                            .map(|i| CompletionResult {
+                                label:      i.label,
+                                kind_label: i.kind.map(completion_kind_label),
+                                detail:     i.detail,
+                            })
+                            .collect();
+                        let _ = tx.send(LspEvent::Completions { items });
                     }
                     Ok(None)  => {}
                     Err(e)    => { let _ = tx.send(LspEvent::Error(e.to_string())); }
@@ -406,6 +453,40 @@ fn marked_string_value(m: MarkedString) -> String {
         MarkedString::LanguageString(LanguageString { value, .. }) => value,
     }
 }
+
+/// Maps an LSP `CompletionItemKind` integer to a short display badge.
+fn completion_kind_label(kind: lsp_types::CompletionItemKind) -> String {
+    use lsp_types::CompletionItemKind as K;
+    match kind {
+        K::TEXT           => "txt",
+        K::METHOD         => "mth",
+        K::FUNCTION       => "fn",
+        K::CONSTRUCTOR    => "ctor",
+        K::FIELD          => "fld",
+        K::VARIABLE       => "var",
+        K::CLASS          => "cls",
+        K::INTERFACE      => "ifc",
+        K::MODULE         => "mod",
+        K::PROPERTY       => "prop",
+        K::UNIT           => "unit",
+        K::VALUE          => "val",
+        K::ENUM           => "enum",
+        K::KEYWORD        => "kw",
+        K::SNIPPET        => "snip",
+        K::COLOR          => "color",
+        K::FILE           => "file",
+        K::REFERENCE      => "ref",
+        K::FOLDER         => "dir",
+        K::ENUM_MEMBER    => "em",
+        K::CONSTANT       => "const",
+        K::STRUCT         => "struct",
+        K::EVENT          => "evt",
+        K::OPERATOR       => "op",
+        K::TYPE_PARAMETER => "tp",
+        _                 => "?",
+    }.to_string()
+}
+
 
 /// Converts a filesystem path to a `file://` URI suitable for LSP messages.
 ///
