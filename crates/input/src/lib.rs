@@ -37,8 +37,14 @@ pub trait InputHandler {
 
 /// Polls for the next terminal event and routes it to the correct mode handler.
 ///
-/// Global hotkeys (`Ctrl+P`, `Ctrl+Shift+Q`) are intercepted before the
-/// per-mode dispatch so they work regardless of the active mode.
+/// Global hotkeys are intercepted **before** per-mode dispatch so they work
+/// regardless of the active mode:
+///
+/// | Hotkey       | Action                                              |
+/// |--------------|-----------------------------------------------------|
+/// | `Ctrl+P`     | Toggle Command Palette                              |
+/// | `Ctrl+B`     | Toggle File Tree                                    |
+/// | Mouse row 0  | Click a tab in the tab bar → switch to that buffer  |
 ///
 /// # Arguments
 ///
@@ -54,7 +60,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
 
     match event::read()? {
         Event::Key(key) => {
-            let ctrl:  bool = key.modifiers.contains(KeyModifiers::CONTROL);
+            let ctrl: bool = key.modifiers.contains(KeyModifiers::CONTROL);
 
             // Global: toggle Command Palette from any mode.
             if ctrl && key.code == KeyCode::Char('p') {
@@ -64,6 +70,12 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                     app.command_palette.reset();
                     app.mode = Mode::CommandPalette;
                 }
+                return Ok(());
+            }
+
+            // Global: toggle file tree from any mode (Ctrl+B).
+            if ctrl && key.code == KeyCode::Char('b') {
+                app.toggle_file_tree();
                 return Ok(());
             }
 
@@ -79,6 +91,16 @@ pub fn handle_input(app: &mut App) -> Result<()> {
             }
         }
         Event::Mouse(mouse) => {
+            // Global: clicking the tab bar (row 0) switches to that buffer
+            // from any mode, including FileTree.
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) && mouse.row == 0 {
+                if let Some(idx) = tab_index_at_col(app, mouse.column) {
+                    app.editor.switch_to(idx);
+                    app.mode = Mode::Normal;
+                    return Ok(());
+                }
+            }
+
             match app.mode {
                 Mode::Normal         => NormalHandler::handle_mouse(app, mouse),
                 Mode::Insert         => InsertHandler::handle_mouse(app, mouse),
@@ -94,6 +116,30 @@ pub fn handle_input(app: &mut App) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+
+/// Returns the index of the buffer tab that the given terminal column falls
+/// within in the top tab bar.
+///
+/// The tab bar renders each tab as `" [● ]<name> "` (leading/trailing spaces,
+/// optional `● ` modified-flag), separated by `│`.  "●" is one terminal
+/// column wide.
+///
+/// Returns `None` when `col` is in the right-side padding past the last tab.
+fn tab_index_at_col(app: &App, col: u16) -> Option<usize> {
+    let mut x: u16 = 0;
+    for (i, buf) in app.editor.buffers.iter().enumerate() {
+        // "● " is 2 display columns; "" is 0.
+        let mod_cols: u16 = if buf.modified { 2 } else { 0 };
+        // Tab label width: 1 (space) + mod + name + 1 (space)
+        let tab_w: u16 = 1 + mod_cols + buf.name.len() as u16 + 1;
+        if col < x + tab_w {
+            return Some(i);
+        }
+        x += tab_w + 1; // +1 for "│" separator
+    }
+    None
 }
 
 
@@ -179,7 +225,6 @@ impl InputHandler for NormalHandler {
                 app.prompt_input.clear();
                 app.mode = Mode::GotoLine;
             }
-            KeyCode::Char('b') if ctrl                   => app.toggle_file_tree(),
             KeyCode::Char('t') if ctrl                   => app.show_terminal = !app.show_terminal,
             KeyCode::Char('d') if ctrl                   => app.show_diag = !app.show_diag,
             KeyCode::Char('w') if !ctrl                  => app.editor.buf_mut().move_up(1),
@@ -212,6 +257,10 @@ impl InputHandler for NormalHandler {
             MouseEventKind::ScrollDown => app.editor.buf_mut().scroll_viewport_down(3, vis_h),
 
             MouseEventKind::Down(MouseButton::Left) => {
+                // Row 0 is the tab bar — clicks there are handled globally before
+                // mode dispatch and should never reach this handler.
+                if mouse.row == 0 { return; }
+
                 let editor: &mut buffer::Buffer = app.editor.buf_mut();
                 let target_line: usize = (mouse.row as usize).saturating_sub(1) + editor.scroll_top;
 
@@ -544,17 +593,26 @@ impl InputHandler for CommandPaletteHandler {
 
 /// Input handler for [`Mode::FileTree`].
 ///
+/// ## Navigation contract
+///
+/// The file tree is a **transient overlay**: it opens to let the user pick a
+/// file and then closes automatically once a selection is made.  This keeps
+/// the mode machine consistent — `Normal` always means "editor is focused".
+///
 /// ## Keybindings
 ///
-/// | Key             | Action                                                  |
-/// |-----------------|---------------------------------------------------------|
-/// | `j` / `↓`       | Move selection down                                     |
-/// | `k` / `↑`       | Move selection up                                       |
-/// | `Space` / `l` / `→` | Expand directory / collapse if already expanded    |
-/// | `h` / `←`       | Collapse directory, or jump to parent if already closed |
-/// | `Enter`         | Open file in editor (directories: toggle expand)        |
-/// | `r`             | Refresh tree (re-scans root)                            |
-/// | `Esc` / `q`     | Return to Normal mode                                   |
+/// | Key                  | Action                                               |
+/// |----------------------|------------------------------------------------------|
+/// | `j` / `↓`            | Move selection down                                  |
+/// | `k` / `↑`            | Move selection up                                    |
+/// | `Space` / `l` / `→`  | Expand directory / collapse if already expanded      |
+/// | `h` / `←`            | Collapse directory, or jump to parent if already closed |
+/// | `Enter`              | Open file → **tree closes**, editor focused          |
+/// | `r`                  | Refresh tree (re-scans root directory)               |
+/// | `Esc` / `q`          | Close tree → Normal mode                             |
+/// | `Ctrl+B`             | Close tree → Normal mode (global, works everywhere)  |
+/// | Mouse click (editor) | Close tree → Normal mode, cursor at click position   |
+/// | Mouse click (tab)    | Switch buffer, close tree → Normal mode              |
 pub struct FileTreeHandler;
 
 impl InputHandler for FileTreeHandler {
@@ -575,12 +633,12 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.collapse_or_jump_parent(); }
             }
             KeyCode::Enter => {
+                // Collect the path to open (closes borrow on app.file_tree).
                 let path: Option<std::path::PathBuf> = app.file_tree.as_mut().and_then(|ft| {
-                    // Check whether selected item is a file; toggle dirs here too.
                     let p: std::path::PathBuf = ft.selected_path()?;
                     if p.is_dir() {
                         ft.toggle_selected();
-                        None // directories don't open in the editor
+                        None // directories toggle in-place, do not close the tree
                     } else {
                         Some(p)
                     }
@@ -589,7 +647,8 @@ impl InputHandler for FileTreeHandler {
                     if let Err(e) = app.open_file(&p) {
                         app.set_message(format!("Error: {e}"));
                     }
-                    app.mode = Mode::Normal;
+                    // Close the tree: mode → Normal, panel hidden.
+                    app.close_file_tree();
                 }
             }
 
@@ -601,6 +660,22 @@ impl InputHandler for FileTreeHandler {
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+        // If the click or drag lands outside the file-tree panel (i.e. in the
+        // editor area), close the tree and forward the event so the cursor moves
+        // to where the user clicked.  Row 0 (tab bar) is handled globally before
+        // mode dispatch and will never reach this handler.
+        let ft_width: usize = app.layout.file_tree.width_or(28);
+        if matches!(mouse.kind,
+                    MouseEventKind::Down(MouseButton::Left)
+                    | MouseEventKind::Drag(MouseButton::Left))
+            && mouse.row > 0
+            && (mouse.column as usize) >= ft_width
+        {
+            app.close_file_tree();
+            NormalHandler::handle_mouse(app, mouse);
+            return;
+        }
+
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 if let Some(ft) = &mut app.file_tree { ft.move_up(); }
@@ -610,19 +685,21 @@ impl InputHandler for FileTreeHandler {
                 if let Some(ft) = &mut app.file_tree { ft.move_down(inner_h); }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(ft) = &mut app.file_tree {
-
+                // Determine the action inside the tree borrow, then act on the
+                // result (open_file / close_file_tree) with a clean borrow.
+                let open_path: Option<std::path::PathBuf> = app.file_tree.as_mut().and_then(|ft| {
                     let viewport_row: usize = (mouse.row as usize).saturating_sub(2);
-                    let path: Option<std::path::PathBuf> = ft.click_row(viewport_row);
-                    if let Some(p) = path {
-                        if p.is_file() {
-                            if let Err(e) = app.open_file(&p) {
-                                app.set_message(format!("Error: {e}"));
-                            }
-                            app.mode = Mode::Normal;
-                        } else if p.is_dir() {
-                            ft.toggle_selected();
-                        }
+                    let path: std::path::PathBuf = ft.click_row(viewport_row)?;
+                    if path.is_file() {
+                        Some(path)
+                    } else {
+                        ft.toggle_selected(); // directory: toggle expand in-place
+                        None
+                    }
+                });
+                if let Some(p) = open_path {
+                    if let Err(e) = app.open_file(&p) {
+                        app.set_message(format!("Error: {e}"));
                     }
                 }
             }

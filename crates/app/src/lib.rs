@@ -163,8 +163,8 @@ impl FileTreeState {
     /// A `FileTreeState` ready to receive scan results on the next tick.
     pub fn new(root: PathBuf) -> Self {
         let (scan_tx, scan_rx) = tokio::sync::mpsc::unbounded_channel();
-        let tx  = scan_tx.clone();
-        let dir = root.clone();
+        let tx: tokio::sync::mpsc::UnboundedSender<ScanResult>  = scan_tx.clone();
+        let dir: PathBuf = root.clone();
         tokio::spawn(async move {
             let entries = scan_dir(&dir).await;
             let _ = tx.send(ScanResult { parent: dir, entries });
@@ -482,6 +482,8 @@ pub struct App {
     pub lsp:             Option<LspManager>,
     /// Terminal layout dimensions written by the UI crate every render frame.
     pub layout:          LayoutSizes,
+    /// Current working directory opened
+    pub working_dir:     PathBuf,
 
     /// Remaining ticks before the transient status message is cleared.
     message_ticks: u8,
@@ -495,14 +497,15 @@ impl App {
     ///
     /// A ready-to-run `App` instance with the mode set to `Normal`.
     pub fn new() -> Self {
-        let config: Config    = Config::load();
-        let editor: Editor    = Editor::new(config.clone());
-        let show_ft: bool   = config.ui.show_file_tree;
+        let config: Config = Config::load();
+        let editor: Editor = Editor::new(config.clone());
+        let show_ft: bool = config.ui.show_file_tree;
         let show_term: bool = config.ui.show_terminal;
         let show_diag: bool = config.ui.show_diagnostics;
+        let working_dir: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let file_tree: Option<FileTreeState> = if show_ft {
-            std::env::current_dir().ok().map(FileTreeState::new)
+            Some(FileTreeState::new(working_dir.clone()))
         } else {
             None
         };
@@ -510,8 +513,7 @@ impl App {
         // Initialise the LSP manager; individual server sessions are spawned
         // lazily on the first `send` call for a given file extension.
         let lsp: Option<LspManager> = if !config.lsp.servers.is_empty() {
-            let root: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            Some(LspManager::new(config.lsp.servers.clone(), root))
+            Some(LspManager::new(config.lsp.servers.clone(), working_dir.clone()))
         } else {
             None
         };
@@ -534,6 +536,7 @@ impl App {
             completions:     CompletionState::default(),
             lsp,
             layout:          LayoutSizes::default(),
+            working_dir  
         }
     }
 
@@ -926,24 +929,27 @@ impl App {
     /// [`Mode::Normal`].
     pub fn toggle_file_tree(&mut self) {
         if self.file_tree.is_some() {
-            self.file_tree = None;
-            self.mode      = Mode::Normal;
+            self.close_file_tree();
         } else {
-            let root: PathBuf = self.editor.buf().path.as_ref()
-                .and_then(|p: &PathBuf| p.parent())
-                .map(PathBuf::from)
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_else(|| PathBuf::from("."));
-            self.file_tree = Some(FileTreeState::new(root));
-            self.mode      = Mode::FileTree;
+            self.file_tree = Some(FileTreeState::new(self.working_dir.clone()));
+            self.mode = Mode::FileTree;
         }
+    }
+
+    /// Closes the file-tree panel unconditionally and returns to [`Mode::Normal`].
+    ///
+    /// Unlike [`toggle_file_tree`], this always hides the panel; it is a
+    /// no-op when the panel is already hidden.
+    pub fn close_file_tree(&mut self) {
+        self.file_tree = None;
+        self.mode = Mode::Normal;
     }
 
     /// Closes the active buffer tab and emits a `textDocument/didClose`
     /// notification to the LSP so it can release server-side resources.
     fn close_active_tab(&mut self) {
         let path: Option<PathBuf> = self.editor.buf().path.clone();
-        let ext:  String          = self.editor.active_extension();
+        let ext: String = self.editor.active_extension();
         if let (Some(path), Some(lsp)) = (path, &mut self.lsp) {
             lsp.send(&ext, LspAction::DidClose { path });
         }

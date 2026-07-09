@@ -601,8 +601,8 @@ impl Ui {
         let ft_w:   u16 = app.layout.file_tree.width;
         let row_off: u16 = buf.cursor.line.saturating_sub(buf.scroll_top) as u16;
         let col_off: u16 = buf.cursor.col.saturating_sub(buf.scroll_left) as u16;
-        let cx = ft_w + gutter_w + col_off;
-        let cy = 1 + row_off; // +1 for the tab bar
+        let cx: u16 = ft_w + gutter_w + col_off;
+        let cy: u16 = 1 + row_off; // +1 for the tab bar
         (cx, cy)
     }
 
@@ -690,7 +690,7 @@ impl Ui {
         let popup_rect = Rect { x, y, width: popup_w, height: popup_h };
         frame.render_widget(Clear, popup_rect);
 
-        let block = Block::default()
+        let block: Block<'_> = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(ACCENT))
             .style(Style::default().bg(BG_PANEL));
@@ -702,24 +702,24 @@ impl Ui {
 
         let items: Vec<ListItem> = app.completions.items.iter().take(MAX_VISIBLE).enumerate()
             .map(|(i, item)| {
-                let is_sel = i == selected;
-                let bg = if is_sel { BG_ACTIVE } else { BG_PANEL };
-                let fg = if is_sel { Color::White } else { FG };
-                let style = Style::default().fg(fg).bg(bg);
+                let is_sel: bool = i == selected;
+                let bg: Color = if is_sel { BG_ACTIVE } else { BG_PANEL };
+                let fg: Color = if is_sel { Color::White } else { FG };
+                let style: Style = Style::default().fg(fg).bg(bg);
 
                 // Compose label + right-aligned kind badge.
-                let badge = item.kind_label.as_deref().unwrap_or("");
-                let label = &item.label;
+                let badge: &str = item.kind_label.as_deref().unwrap_or("");
+                let label: &String = &item.label;
 
                 let content: String = if badge.is_empty() {
                     format!(" {:<width$}", label, width = inner_w.saturating_sub(1))
                 } else {
-                    let badge_str = format!("[{}]", badge);
-                    let label_w = inner_w.saturating_sub(badge_str.len() + 2);
+                    let badge_str: String = format!("[{}]", badge);
+                    let label_w: usize = inner_w.saturating_sub(badge_str.len() + 2);
                     format!(" {:<label_w$}{}", label, badge_str, label_w = label_w)
                 };
 
-                let spans = if is_sel {
+                let spans: Vec<Span<'_>> = if is_sel {
                     vec![Span::styled(content, style.add_modifier(Modifier::BOLD))]
                 } else {
                     vec![Span::styled(content, style)]
