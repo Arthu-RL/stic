@@ -223,7 +223,7 @@ impl Config {
     ///
     /// A fully hydrated executable configuration structure.
     pub fn load() -> Self {
-        Self::try_load().unwrap_or_default()
+        Self::try_load().unwrap_or_else(|_| Self::builtin_default())
     }
 
     /// Accesses designated platform configuration pathways parsing content streams.
@@ -234,12 +234,29 @@ impl Config {
     fn try_load() -> Result<Self, ConfigError> {
         let path: PathBuf = Self::config_path()?;
         if !path.exists() {
-            return Ok(Self::default());
+            return Ok(Self::builtin_default());
         }
         let raw: String = std::fs::read_to_string(&path)
             .map_err(|source: std::io::Error| ConfigError::Io { path: path.clone(), source })?;
         let cfg: Config = toml::from_str(&raw)?;
         Ok(cfg)
+    }
+
+    /// Parses the compiled-in [`DEFAULT_CONFIG_TOML`] template as the true baseline
+    /// configuration (including the documented LSP server entries such as
+    /// `rust-analyzer`).
+    ///
+    /// This is used instead of `#[derive(Default)]` so that a freshly installed
+    /// `stic` behaves identically whether or not `~/.config/stic/config.toml`
+    /// has been written to disk yet — otherwise LSP features would silently do
+    /// nothing until the user ran `:open_config` once.
+    ///
+    /// # Returns
+    ///
+    /// The parsed built-in default `Config`.
+    fn builtin_default() -> Self {
+        toml::from_str(DEFAULT_CONFIG_TOML)
+            .expect("DEFAULT_CONFIG_TOML is a compile-time constant and must always parse")
     }
 
     /// Computes explicit system file locations targeting individual execution preferences on disk.
@@ -295,7 +312,7 @@ highlight_line   = true
 ruler_column     = 80
 
 [ui]
-theme            = "Monokai"
+theme            = "base16-eighties.dark"
 show_status_bar  = true
 show_file_tree   = false
 show_terminal    = false

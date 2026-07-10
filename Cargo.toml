@@ -17,7 +17,8 @@ members = [
     "crates/config",
     "crates/buffer",
     "crates/app",
-    "crates/lsp"
+    "crates/lsp",
+    "crates/terminal"
 ]
 
 [workspace.package]
@@ -46,7 +47,6 @@ lsp-types = "0.94"
 
 # LSP client — thin typed wrapper over tower-lsp's JSON-RPC
 async-lsp-client = "0.2.3"
-tower-lsp = "0.20.0"
 
 # Async (needed for LSP process spawning in the future)
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "fs"] }
@@ -66,6 +66,7 @@ config = { path = "crates/config" }
 editor = { path = "crates/editor" }
 input = { path = "crates/input" }
 lsp = { path = "crates/lsp" }
+terminal = { path = "crates/terminal" }
 ui = { path = "crates/ui" }
 
 [dependencies]

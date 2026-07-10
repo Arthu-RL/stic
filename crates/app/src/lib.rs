@@ -33,6 +33,9 @@ pub enum Mode {
     FileTree,
     /// Save-As filename prompt; `prompt_input` accumulates the destination path.
     SaveAs,
+    /// Integrated terminal focused; keystrokes are forwarded to the shell
+    /// running inside [`App::terminal`] instead of the editor.
+    Terminal,
 }
 
 
@@ -470,6 +473,9 @@ pub struct App {
     pub file_tree:       Option<FileTreeState>,
     /// Whether the integrated terminal panel is visible.
     pub show_terminal:   bool,
+    /// The running PTY-backed shell session; `None` until first opened via
+    /// [`App::toggle_terminal`], and killed when the panel is closed.
+    pub terminal:        Option<terminal::PtySession>,
     /// Whether the diagnostics panel is visible.
     pub show_diag:       bool,
     /// In-process clipboard for copy/paste operations.
@@ -530,6 +536,7 @@ impl App {
             search:          SearchState::new(),
             file_tree,
             show_terminal:   show_term,
+            terminal:        None,
             show_diag,
             clipboard:       String::new(),
             hover:           HoverOverlay::default(),
@@ -557,6 +564,15 @@ impl App {
 
         if let Some(ft) = &mut self.file_tree {
             ft.drain_scan_results();
+        }
+
+        if let Some(term) = &mut self.terminal {
+            if !term.is_alive() {
+                self.terminal      = None;
+                self.show_terminal = false;
+                if self.mode == Mode::Terminal { self.mode = Mode::Normal; }
+                self.set_message("Terminal: shell exited");
+            }
         }
 
         if let Some(t) = self.message_ticks.checked_sub(1) {
@@ -635,17 +651,27 @@ impl App {
     }
 
 
-    /// Opens a file into a new buffer tab and notifies the LSP of the open
-    /// event.  If the file is already open the tab is focused instead.
+    /// Opens a filesystem path, dispatching to the right subsystem based on
+    /// its kind.
+    ///
+    /// A **directory** (e.g. `stic .` or `stic ./some/dir` on the command
+    /// line) opens the file-tree panel rooted there instead of failing with
+    /// an `EISDIR` I/O error.  A **file** is opened into a new buffer tab and
+    /// notifies the LSP of the open event; if the file is already open the
+    /// tab is focused instead.
     ///
     /// # Arguments
     ///
-    /// * `path` - Path to the file to open.
+    /// * `path` - Path to the file or directory to open.
     ///
     /// # Returns
     ///
     /// A `Result` indicating success or any I/O error encountered.
     pub fn open_file(&mut self, path: &Path) -> Result<()> {
+        if path.is_dir() {
+            self.open_directory(path);
+            return Ok(());
+        }
         self.editor.open_file(path)?;
         let ext: String        = self.editor.active_extension();
         let text: String       = self.editor.buf().text();
@@ -656,6 +682,21 @@ impl App {
         }
         self.set_message(format!("Opened {}", path.display()));
         Ok(())
+    }
+
+    /// Opens a directory as the workspace root: updates [`App::working_dir`],
+    /// (re)opens the file-tree panel there, and switches to [`Mode::FileTree`]
+    /// so the user can immediately pick a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Directory path to open, absolute or relative.
+    fn open_directory(&mut self, path: &Path) {
+        let dir: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        self.working_dir = dir.clone();
+        self.file_tree    = Some(FileTreeState::new(dir));
+        self.mode         = Mode::FileTree;
+        self.set_message(format!("Opened directory {}", path.display()));
     }
 
     /// Saves the active buffer to disk and notifies the LSP of the save event.
@@ -747,7 +788,7 @@ impl App {
             "duplicate_line"   => { self.editor.buf_mut().duplicate_line();  self.mode = Mode::Normal; }
             "delete_line"      => { self.editor.buf_mut().delete_line();     self.mode = Mode::Normal; }
             "toggle_file_tree" => { self.toggle_file_tree(); }
-            "toggle_terminal"  => { self.show_terminal = !self.show_terminal; self.mode = Mode::Normal; }
+            "toggle_terminal"  => { self.toggle_terminal(); }
             "toggle_diag"      => { self.show_diag = !self.show_diag;        self.mode = Mode::Normal; }
             "next_tab"         => { self.editor.next_tab();                  self.mode = Mode::Normal; }
             "prev_tab"         => { self.editor.prev_tab();                  self.mode = Mode::Normal; }
@@ -943,6 +984,59 @@ impl App {
     pub fn close_file_tree(&mut self) {
         self.file_tree = None;
         self.mode = Mode::Normal;
+    }
+
+    /// Opens (spawning the shell lazily on first use) or closes the
+    /// integrated terminal panel, and focuses it for keyboard input.
+    ///
+    /// Pressed while the terminal is already focused, this closes the panel
+    /// and kills the shell process. Pressed while hidden, it spawns a shell
+    /// rooted at [`App::working_dir`] (reusing one already running in the
+    /// background) and switches to [`Mode::Terminal`].
+    pub fn toggle_terminal(&mut self) {
+        if self.mode == Mode::Terminal {
+            self.terminal      = None;
+            self.show_terminal = false;
+            self.mode          = Mode::Normal;
+            return;
+        }
+
+        if self.terminal.is_none() {
+            // The panel has never been laid out yet the first time this
+            // runs, so fall back to the configured panel height/width.
+            let rows: u16 = self.layout.terminal.height_or(9).saturating_sub(1).max(1) as u16;
+            let cols: u16 = self.layout.terminal.width_or(80).max(1) as u16;
+            match terminal::PtySession::spawn(&self.working_dir, rows, cols) {
+                Ok(session) => self.terminal = Some(session),
+                Err(e) => {
+                    self.set_message(format!("Terminal: {e}"));
+                    return;
+                }
+            }
+        }
+
+        self.show_terminal = true;
+        self.mode          = Mode::Terminal;
+    }
+
+    /// Returns keyboard focus from the terminal to the editor without
+    /// closing the panel or killing the shell, so a long-running command can
+    /// keep executing in the background while the user edits.
+    pub fn unfocus_terminal(&mut self) {
+        self.mode = Mode::Normal;
+    }
+
+    /// Forwards raw input bytes to the running shell, if any.
+    ///
+    /// # Arguments
+    ///
+    /// * `bytes` - Already-encoded terminal input (e.g. `\r`, `\x1b[A`).
+    pub fn send_terminal_input(&mut self, bytes: &[u8]) {
+        if let Some(term) = &mut self.terminal {
+            if let Err(e) = term.write_input(bytes) {
+                self.set_message(format!("Terminal: {e}"));
+            }
+        }
     }
 
     /// Closes the active buffer tab and emits a `textDocument/didClose`

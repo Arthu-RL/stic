@@ -11,3 +11,4 @@ serde_json.workspace      = true
 lsp-types.workspace       = true
 async-lsp-client.workspace = true
 config.workspace          = true
+which = "8.0.4"

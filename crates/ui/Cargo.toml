@@ -12,3 +12,4 @@ buffer.workspace = true
 editor.workspace = true
 command_palette.workspace = true
 config.workspace = true
+terminal.workspace = true

@@ -136,6 +136,22 @@ impl Session {
         ext:  String,
         tx:   mpsc::UnboundedSender<LspEvent>,
     ) -> anyhow::Result<Self> {
+        // `async_lsp_client::LspServer::new` panics (rather than returning an
+        // `Err`) if the executable cannot be spawned, which would silently
+        // kill this detached task with no message reaching the user. Check
+        // the binary is resolvable on `PATH` (or an absolute/relative path
+        // that exists) up front so a missing server produces a clear,
+        // recoverable [`LspEvent::Error`] instead.
+        if which::which(&cfg.command).is_err() {
+            anyhow::bail!(
+                "'{}' not found on PATH — install it or fix the command in {}",
+                cfg.command,
+                config::Config::config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "the stic config".to_string()),
+            );
+        }
+
         let (server, mut rx) = LspServer::new(&cfg.command, &cfg.args);
 
         let root_uri = Url::from_directory_path(root)

@@ -125,7 +125,7 @@ impl Ui {
 
         let terminal_rect: Option<Rect> = if app.show_terminal {
             let r: Rect = v_chunks[row]; row += 1;
-            Self::render_terminal_panel(frame, r);
+            Self::render_terminal_panel(frame, app, r);
             Some(r)
         } else {
             None
@@ -452,26 +452,41 @@ impl Ui {
         }
     }
 
-    /// Renders the stub integrated-terminal panel.
-    fn render_terminal_panel(frame: &mut Frame, area: Rect) {
+    /// Renders the integrated PTY-backed terminal panel.
+    ///
+    /// Delegates the actual screen contents to [`terminal::PtySession::render`]
+    /// once a shell has been spawned via `Ctrl+T`; the border is highlighted
+    /// while [`Mode::Terminal`] has keyboard focus.
+    fn render_terminal_panel(frame: &mut Frame, app: &mut App, area: Rect) {
+        let focused: bool = app.mode == Mode::Terminal;
+        let border_style: Style = if focused {
+            Style::default().fg(ACCENT)
+        } else {
+            Style::default().fg(FG_DIM)
+        };
         let block: Block<'_> = Block::default()
             .title(" Terminal ")
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(FG_DIM))
+            .border_style(border_style)
             .style(Style::default().bg(Color::Rgb(18, 20, 28)));
         let inner: Rect = block.inner(area);
         frame.render_widget(block, area);
 
-        let hint: Paragraph<'_> = Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled("$ ", Style::default().fg(ACCENT2).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    "(integrated terminal - coming soon, use Ctrl+T to toggle)",
-                    Style::default().fg(FG_DIM),
-                ),
-            ])
-        ]);
-        frame.render_widget(hint, inner);
+        if let Some(term) = &mut app.terminal {
+            term.resize(inner.height, inner.width);
+            term.render(frame, inner, focused);
+        } else {
+            let hint: Paragraph<'_> = Paragraph::new(vec![
+                Line::from(vec![
+                    Span::styled("$ ", Style::default().fg(ACCENT2).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        "press Ctrl+T to start a shell",
+                        Style::default().fg(FG_DIM),
+                    ),
+                ])
+            ]);
+            frame.render_widget(hint, inner);
+        }
     }
 
     /// Renders the bottom status bar (mode indicator, filename, cursor position, undo flags).
@@ -487,6 +502,7 @@ impl Ui {
             Mode::CommandPalette => (" PALETTE ", Color::Black, Color::Rgb(100, 180, 220)),
             Mode::FileTree       => (" TREE    ", Color::Black, Color::Rgb(160, 200, 100)),
             Mode::SaveAs         => (" SAVE AS ", Color::Black, Color::Rgb(80,  200, 160)),
+            Mode::Terminal       => (" TERMINAL", Color::White, Color::Rgb(50,  55,  70)),
         };
 
         let bar_bg: Color = Color::Rgb(22, 25, 34);

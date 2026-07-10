@@ -79,6 +79,14 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // Global: toggle the integrated terminal from any mode (Ctrl+T).
+            // Handled before mode dispatch so it works even while the
+            // terminal itself has focus (closes the panel) or while editing.
+            if ctrl && key.code == KeyCode::Char('t') {
+                app.toggle_terminal();
+                return Ok(());
+            }
+
             match app.mode {
                 Mode::Normal         => NormalHandler::handle_key(app, key),
                 Mode::Insert         => InsertHandler::handle_key(app, key),
@@ -88,6 +96,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 Mode::CommandPalette => CommandPaletteHandler::handle_key(app, key),
                 Mode::FileTree       => FileTreeHandler::handle_key(app, key),
                 Mode::SaveAs         => SaveAsHandler::handle_key(app, key),
+                Mode::Terminal       => TerminalHandler::handle_key(app, key),
             }
         }
         Event::Mouse(mouse) => {
@@ -110,6 +119,7 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 Mode::CommandPalette => CommandPaletteHandler::handle_mouse(app, mouse),
                 Mode::FileTree       => FileTreeHandler::handle_mouse(app, mouse),
                 Mode::SaveAs         => SaveAsHandler::handle_mouse(app, mouse),
+                Mode::Terminal       => TerminalHandler::handle_mouse(app, mouse),
             }
         }
         Event::Resize(_, _) => {}
@@ -225,7 +235,6 @@ impl InputHandler for NormalHandler {
                 app.prompt_input.clear();
                 app.mode = Mode::GotoLine;
             }
-            KeyCode::Char('t') if ctrl                   => app.show_terminal = !app.show_terminal,
             KeyCode::Char('d') if ctrl                   => app.show_diag = !app.show_diag,
             KeyCode::Char('w') if !ctrl                  => app.editor.buf_mut().move_up(1),
             KeyCode::Char('w') if ctrl                   => app.editor.close_active(),
@@ -733,5 +742,83 @@ impl InputHandler for SaveAsHandler {
             KeyCode::Backspace => { app.prompt_input.pop(); }
             _ => {}
         }
+    }
+}
+
+
+/// Input handler for [`Mode::Terminal`] — the integrated PTY-backed shell.
+///
+/// Every key is translated by [`encode_terminal_key`] into the raw byte
+/// sequence a real terminal would send and written directly to the shell's
+/// stdin, making the panel a fully usable terminal rather than a passive
+/// output viewer. `Esc` returns keyboard focus to the editor without closing
+/// the panel or killing the shell; `Ctrl+T` (handled globally, see
+/// [`handle_input`]) closes it.
+pub struct TerminalHandler;
+
+impl InputHandler for TerminalHandler {
+    fn handle_key(app: &mut App, key: KeyEvent) {
+        if key.code == KeyCode::Esc {
+            app.unfocus_terminal();
+            return;
+        }
+        if let Some(bytes) = encode_terminal_key(key) {
+            app.send_terminal_input(&bytes);
+        }
+    }
+}
+
+/// Encodes a crossterm [`KeyEvent`] into the raw byte sequence a terminal
+/// emulator would send to a shell's stdin.
+///
+/// Covers printable characters, `Ctrl+<letter>` control codes, and the
+/// common ANSI escape sequences for arrows, navigation, and function keys
+/// F1–F4. Returns `None` for keys with no terminal equivalent (e.g. bare
+/// modifier presses).
+///
+/// # Arguments
+///
+/// * `key` - The key event to encode.
+///
+/// # Returns
+///
+/// The byte sequence to write to the pty, or `None` if the key is not
+/// forwardable.
+fn encode_terminal_key(key: KeyEvent) -> Option<Vec<u8>> {
+    let ctrl: bool = key.modifiers.contains(KeyModifiers::CONTROL);
+    match key.code {
+        KeyCode::Char(c) if ctrl => {
+            let lower: char = c.to_ascii_lowercase();
+            if lower.is_ascii_lowercase() {
+                Some(vec![(lower as u8) & 0x1f])
+            } else {
+                Some(c.to_string().into_bytes())
+            }
+        }
+        KeyCode::Char(c)   => Some(c.to_string().into_bytes()),
+        KeyCode::Enter     => Some(b"\r".to_vec()),
+        KeyCode::Backspace => Some(b"\x7f".to_vec()),
+        KeyCode::Tab       => Some(b"\t".to_vec()),
+        KeyCode::BackTab   => Some(b"\x1b[Z".to_vec()),
+        KeyCode::Left      => Some(b"\x1b[D".to_vec()),
+        KeyCode::Right     => Some(b"\x1b[C".to_vec()),
+        KeyCode::Up        => Some(b"\x1b[A".to_vec()),
+        KeyCode::Down      => Some(b"\x1b[B".to_vec()),
+        KeyCode::Home      => Some(b"\x1b[H".to_vec()),
+        KeyCode::End       => Some(b"\x1b[F".to_vec()),
+        KeyCode::PageUp    => Some(b"\x1b[5~".to_vec()),
+        KeyCode::PageDown  => Some(b"\x1b[6~".to_vec()),
+        KeyCode::Delete    => Some(b"\x1b[3~".to_vec()),
+        KeyCode::Insert    => Some(b"\x1b[2~".to_vec()),
+        KeyCode::F(n) if (1..=4).contains(&n) => {
+            let seq: &[u8] = match n {
+                1 => b"\x1bOP",
+                2 => b"\x1bOQ",
+                3 => b"\x1bOR",
+                _ => b"\x1bOS",
+            };
+            Some(seq.to_vec())
+        }
+        _ => None,
     }
 }
