@@ -5,57 +5,24 @@ See the [README](../README.md) for what works today.
 
 ---
 
-## LSP
+# TODO TASKS:
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Diagnostics (`publishDiagnostics`) | **Done** | Shown in diagnostics panel (`Ctrl+D`) |
-| Go to Definition | **Done** | `F12` or Command Palette |
-| Hover documentation | **Done** | Command Palette → Show Hover Documentation |
-| **Autocomplete / completions** | **Not implemented** | Palette command exists; shows “not yet implemented” |
-| Find References | **Not implemented** | `Shift+F12` / palette stub |
-| Rename Symbol | **Not implemented** | `F2` / palette stub |
-| Code Actions | **Not implemented** | `Ctrl+.` / palette stub |
-| Workspace Symbol Search | **Not implemented** | `Ctrl+Shift+O` / palette stub |
-| Completion popup UI | **Not implemented** | Needs dropdown overlay + `textDocument/completion` |
-| Incremental document sync | **Not implemented** | Full-buffer sync on every edit today |
+Error when closing app, it seems it is leaking thread
 
----
+```
+Error: client exited without proper shutdown sequence
 
-## Syntax highlighting
+Stack backtrace:
+   0: <anyhow::Error>::msg::<alloc::string::String>
+   1: anyhow::__private::format_err
+   2: rust_analyzer::run_server
+   3: std::sys::backtrace::__rust_begin_short_backtrace::<<stdx::thread::Builder>::spawn<rust_analyzer::run_server, core::result::Result<(), anyhow::Error>>::{closure#0}, core::result::Result<(), anyhow::Error>>
+   4: <<std::thread::Builder>::spawn_unchecked_<<stdx::thread::Builder>::spawn<rust_analyzer::run_server, core::result::Result<(), anyhow::Error>>::{closure#0}, core::result::Result<(), anyhow::Error>>::{closure#1} as core::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+   5: std::sys::thread::unix::Thread::new::thread_start
+   6: start_thread
+             at ./nptl/pthread_create.c:447:8
+   7: clone3
+             at ./misc/../sysdeps/unix/sysv/linux/x86_64/clone3.S:78:0
+```
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| Bundled languages (Rust, C, C++, Python, …) | **Done** | Via syntect defaults + file extension |
-| Theme selection (`ui.theme`) | **Done** | Sublime Text theme name in config |
-| **Custom language grammars** (e.g. C3 / `.c3`) | **Not implemented** | No config path to load extra `.sublime-syntax` files yet |
-| **Per-language theme overrides** | **Not implemented** | Single global theme only |
-| Live theme switch without restart | **Not implemented** | Change config and reopen editor |
-
----
-
-## Editor & UI
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| File tree: collapsed by default | **Done** | Directories start collapsed; `Space`/`l`/`→` to expand |
-| File tree: lazy async loading | **Done** | `tokio::fs` scan per directory, depth ≤ 3, non-blocking |
-| File tree: collapse / parent jump | **Done** | `h`/`←` collapses or jumps to parent |
-| File tree: loading indicator `⊙` | **Done** | Shown while scan is in-flight |
-| Integrated terminal | **Stub** | Panel toggles; no PTY/shell yet |
-| Open File dialog | **Not implemented** | Use `:e path` or CLI `stic file.txt` |
-| Configurable keybindings | **Not wired** | `[keybindings]` in TOML is parsed but input uses hardcoded keys |
-| Save As path completion | **Not implemented** | Manual path entry only |
-| Multiple cursors | **Not planned yet** | — |
-| Split panes | **Not planned yet** | — |
-
----
-
-## Documentation
-
-| Item | Status |
-|------|--------|
-| User guide in README | **Done** |
-| Keybinding reference in `crates/input` docs | **Done** |
-| Command reference in `crates/command_palette` docs | **Done** |
-| Developer LSP integration guide (`docs/lsp.md`) | **Removed** — LSP client crate is implemented |
+Have a way to save termianl session in app scope, so we can code in app running it at the same time in terminal mode
