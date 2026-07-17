@@ -66,5 +66,13 @@ async fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: Ve
         app.tick();
     }
 
+    // Gracefully tear down every language server (LSP `shutdown` request +
+    // `exit` notification) before the process ends, so servers such as
+    // rust-analyzer terminate cleanly instead of panicking about a client
+    // that "exited without proper shutdown sequence".
+    if let Some(lsp) = app.lsp.take() {
+        lsp.shutdown_all().await;
+    }
+
     Ok(())
 }

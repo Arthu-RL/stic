@@ -54,7 +54,6 @@ Parent directories are created automatically when saving to a new path (e.g. `no
 Fuzzy-search all commands by name, id, or category. Examples:
 
 - `save` → Save File / Save File As…
-- `diag` → Toggle Diagnostics
 - `def` → Go to Definition (LSP)
 - `config` → Open Configuration
 
@@ -86,7 +85,8 @@ Full command list: see doc comments in `crates/command_palette/src/lib.rs`.
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo |
 | `Ctrl+F` / `F3` | Find / find next |
 | `Ctrl+B` | File tree |
-| `Ctrl+D` | Diagnostics panel |
+| `Ctrl+T` | Show/hide terminal (shell keeps running while hidden) |
+| `Ctrl+Shift+T` | Kill the terminal's shell session |
 | `F12` | Go to definition (LSP) |
 
 More detail (Insert mode, mouse, file tree): see `crates/input/src/lib.rs` module docs.
@@ -130,7 +130,6 @@ theme            = "base16-ocean.dark"
 show_status_bar  = true
 show_file_tree   = false
 show_terminal    = false
-show_diagnostics = false
 ```
 
 **Popular bundled theme names** (exact spelling matters):
@@ -208,12 +207,13 @@ root    = "/path/to/rust/project"
 
 | Feature | Trigger |
 |---------|---------|
-| Diagnostics (errors/warnings) | Automatic; show panel with `Ctrl+D` |
+| Diagnostics (errors/warnings) | Automatic; underlined inline in the editor |
 | Go to definition | `F12` or palette → Go to Definition |
 | Hover docs | Palette → Show Hover Documentation |
 | Document sync | On open, edit, save, close tab |
 
-Status messages like `LSP ready (.rs)` appear in the status bar when a server connects.
+LSP lifecycle events (e.g. a server becoming ready) are logged to `/tmp/stic.log` rather than
+the status bar; only errors that need your attention surface there briefly.
 
 ### What does **not** work yet
 
@@ -250,13 +250,14 @@ stic/
 ├── docs/
 │   └── TODO.md              # Unimplemented features & roadmap
 └── crates/
-    ├── app/                 # App state, modes, LSP wiring
+    ├── app/                 # App state, modes, LSP
     ├── buffer/              # Rope buffer, undo, diagnostics storage
     ├── command_palette/     # Ctrl+P UI + command list
     ├── config/              # TOML config load/save
     ├── editor/              # Tabs + syntect highlighter
     ├── input/               # Key/mouse → mode handlers
     ├── lsp/                 # LSP client (async-lsp-client)
+    ├── terminal/            # Integrated PTY shell
     └── ui/                  # Ratatui rendering
 ```
 

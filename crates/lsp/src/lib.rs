@@ -112,6 +112,9 @@ pub enum LspAction {
 #[derive(Clone)]
 struct Session {
     server: LspServer,
+    /// Handle of the background task forwarding server messages to the event
+    /// channel.  Shared so cloned sessions can still abort it on shutdown.
+    forward_task: Arc<tokio::task::JoinHandle<()>>,
 }
 
 impl Session {
@@ -157,17 +160,27 @@ impl Session {
         let root_uri = Url::from_directory_path(root)
             .unwrap_or_else(|_| Url::parse("file:///").unwrap());
 
-        server.initialize(InitializeParams {
+        // Bound the handshake: a server that spawns but dies (or never
+        // answers `initialize`) would otherwise suspend this future forever
+        // while it holds the session-map lock, wedging every later LSP
+        // operation — including shutdown at app exit.
+        let init = server.initialize(InitializeParams {
             process_id: Some(std::process::id()),
             root_uri:   Some(root_uri),
             ..Default::default()
-        }).await?;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(15), init)
+            .await
+            .map_err(|_| anyhow::anyhow!(
+                "'{}' did not answer the initialize request (is it installed correctly?)",
+                cfg.command,
+            ))??;
         let _ = server.initialized().await;
 
         let _ = tx.send(LspEvent::Ready { ext });
 
         // Background task: forward server → client messages to the event channel.
-        tokio::spawn(async move {
+        let forward_task = tokio::spawn(async move {
             loop {
                 match rx.recv().await {
                     None      => break,
@@ -176,7 +189,21 @@ impl Session {
             }
         });
 
-        Ok(Self { server })
+        Ok(Self { server, forward_task: Arc::new(forward_task) })
+    }
+
+    /// Performs the LSP shutdown sequence: sends the `shutdown` request,
+    /// awaits its response, emits the `exit` notification, then aborts the
+    /// message-forwarding task.
+    ///
+    /// Every step is fail-safe — a hung or already-dead server must never
+    /// block the editor from quitting, so errors are logged and ignored.
+    async fn shutdown(self) {
+        if let Err(e) = self.server.shutdown().await {
+            // log::warn!("LSP shutdown request failed: {e}");
+        }
+        self.server.exit().await;
+        self.forward_task.abort();
     }
 
     /// Sends the given action to the language server, awaiting any response
@@ -331,7 +358,6 @@ fn handle_server_msg(msg: ServerMessage, tx: &mpsc::UnboundedSender<LspEvent>) {
             // Silently ignore server-initiated requests such as
             // `window/workDoneProgress/create` or `workspace/configuration`.
             // Most servers do not stall on unanswered capability-probe requests.
-            log::debug!("LSP server→client request ignored (server-initiated)");
         }
         _ => {}
     }
@@ -380,6 +406,16 @@ impl LspManager {
         }
     }
 
+    /// Whether a language server is configured for the given file extension,
+    /// regardless of whether its session has been spawned yet.
+    ///
+    /// # Arguments
+    ///
+    /// * `file_ext` - File extension to look up (e.g. `"rs"`).
+    pub fn has_server(&self, file_ext: &str) -> bool {
+        self.configs.contains_key(file_ext)
+    }
+
     /// Fire-and-forget dispatch: spawns the server session if needed, then
     /// forwards `action` to it on a Tokio task.
     ///
@@ -415,6 +451,46 @@ impl LspManager {
                 s.dispatch(action, &tx).await;
             }
         });
+    }
+
+    /// Gracefully shuts down every active language server session.
+    ///
+    /// Each server receives the LSP `shutdown` request followed by the `exit`
+    /// notification, per the protocol's teardown sequence, so servers like
+    /// rust-analyzer terminate cleanly instead of panicking with
+    /// `client exited without proper shutdown sequence`.
+    ///
+    /// Sessions are shut down concurrently, each bounded by a two-second
+    /// timeout, and the entire teardown — including acquiring the session
+    /// map lock, which a wedged spawn task could be holding — is capped at
+    /// three seconds, so nothing can hang application exit.
+    /// Must be awaited before the process terminates (i.e. at the end of the
+    /// main event loop).
+    pub async fn shutdown_all(self) {
+        let teardown = async {
+            let mut map = self.sessions.lock().await;
+            if map.is_empty() {
+                return;
+            }
+
+            let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+            for (ext, session) in map.drain() {
+                tasks.spawn(async move {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        session.shutdown(),
+                    ).await {
+                        Ok(())  => {},
+                        Err(_)  => {},
+                    }
+                });
+            }
+            while tasks.join_next().await.is_some() {}
+        };
+
+        if tokio::time::timeout(std::time::Duration::from_secs(3), teardown).await.is_err() {
+            // log::warn!("LSP teardown timed out; abandoning remaining sessions");
+        }
     }
 
     /// Drains all pending [`LspEvent`] items without blocking.

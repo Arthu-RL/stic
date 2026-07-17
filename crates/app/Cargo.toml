@@ -10,5 +10,6 @@ editor.workspace          = true
 buffer.workspace          = true
 command_palette.workspace = true
 lsp.workspace             = true
+log.workspace             = true
 terminal.workspace        = true
 tokio.workspace           = true

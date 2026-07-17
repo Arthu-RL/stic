@@ -79,9 +79,20 @@ pub fn handle_input(app: &mut App) -> Result<()> {
                 return Ok(());
             }
 
+            // Global: kill the terminal session from any mode (Ctrl+Shift+T).
+            // Checked before the plain Ctrl+T toggle since shifted letters
+            // arrive as uppercase characters with the SHIFT modifier set.
+            if ctrl && matches!(key.code, KeyCode::Char('T') | KeyCode::Char('t'))
+                && key.modifiers.contains(KeyModifiers::SHIFT)
+            {
+                app.kill_terminal();
+                return Ok(());
+            }
+
             // Global: toggle the integrated terminal from any mode (Ctrl+T).
             // Handled before mode dispatch so it works even while the
-            // terminal itself has focus (closes the panel) or while editing.
+            // terminal itself has focus (hides the panel, keeping the shell
+            // session alive in the background) or while editing.
             if ctrl && key.code == KeyCode::Char('t') {
                 app.toggle_terminal();
                 return Ok(());
@@ -163,6 +174,10 @@ impl InputHandler for NormalHandler {
         let alt:   bool = key.modifiers.contains(KeyModifiers::ALT);
         let _cfg        = &app.config.editor;
 
+        // Any Normal-mode keypress dismisses a lingering hover popup; if this
+        // key re-triggers hover (Ctrl+K) it reopens once the response lands.
+        app.hover.visible = false;
+
         if !ctrl && key.code != KeyCode::Esc {
             app.editor.buf_mut().clear_selection();
         }
@@ -235,7 +250,6 @@ impl InputHandler for NormalHandler {
                 app.prompt_input.clear();
                 app.mode = Mode::GotoLine;
             }
-            KeyCode::Char('d') if ctrl                   => app.show_diag = !app.show_diag,
             KeyCode::Char('w') if !ctrl                  => app.editor.buf_mut().move_up(1),
             KeyCode::Char('w') if ctrl                   => app.editor.close_active(),
             KeyCode::Char('n') if ctrl                   => app.editor.new_buffer(),
@@ -260,6 +274,8 @@ impl InputHandler for NormalHandler {
     }
 
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+        app.hover.visible = false;
+
         let vis_h: usize = app.layout.editor.height_or(24);
         match mouse.kind {
             MouseEventKind::ScrollUp   => app.editor.buf_mut().scroll_viewport_up(3),
@@ -455,7 +471,37 @@ impl InputHandler for InsertHandler {
         app.editor.buf_mut().scroll_to_cursor(app.layout.editor.height_or(24), 0);
     }
 
+    /// Routes mouse input while the completion popup may be open.
+    ///
+    /// Scrolling or clicking *inside* the popup navigates/accepts a
+    /// suggestion instead of reaching the editor underneath it. A click
+    /// outside the popup dismisses it and then falls through to the normal
+    /// editor click handling, so the click still places the cursor instead
+    /// of being silently swallowed.
     fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+        if app.completions.visible {
+            let over_popup: bool = app.point_in_completions_popup(mouse.column, mouse.row);
+            match mouse.kind {
+                MouseEventKind::ScrollUp if over_popup => {
+                    app.completion_prev();
+                    return;
+                }
+                MouseEventKind::ScrollDown if over_popup => {
+                    app.completion_next();
+                    return;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(idx) = app.completion_item_at(mouse.column, mouse.row) {
+                        app.completions.selected = idx;
+                        app.accept_completion();
+                        app.notify_lsp_change();
+                        return;
+                    }
+                    app.close_completions();
+                }
+                _ => {}
+            }
+        }
         NormalHandler::handle_mouse(app, mouse);
     }
 }
@@ -753,7 +799,8 @@ impl InputHandler for SaveAsHandler {
 /// stdin, making the panel a fully usable terminal rather than a passive
 /// output viewer. `Esc` returns keyboard focus to the editor without closing
 /// the panel or killing the shell; `Ctrl+T` (handled globally, see
-/// [`handle_input`]) closes it.
+/// [`handle_input`]) hides the panel while keeping the session alive, and
+/// `Ctrl+Shift+T` terminates the shell for good.
 pub struct TerminalHandler;
 
 impl InputHandler for TerminalHandler {

@@ -20,7 +20,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, Paragraph,
+        Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
     Frame,
 };
 
@@ -30,19 +33,52 @@ use buffer::DiagSeverity;
 
 mod colors {
     use ratatui::style::Color;
-    pub const BG:         Color = Color::Rgb(25,  29,  38);
-    pub const BG_PANEL:   Color = Color::Rgb(30,  34,  44);
-    pub const BG_ACTIVE:  Color = Color::Rgb(38,  44,  56);
-    pub const BG_LINE_HL: Color = Color::Rgb(42,  48,  62);
-    pub const SEL_BG:     Color = Color::Rgb(55,  75,  105);
-    pub const FG:         Color = Color::Rgb(200, 210, 220);
-    pub const FG_DIM:     Color = Color::Rgb(90,  105, 125);
-    pub const FG_GUTTER:  Color = Color::Rgb(65,  80,  100);
-    pub const ACCENT:     Color = Color::Rgb(80,  160, 220);
-    pub const ACCENT2:    Color = Color::Rgb(100, 200, 140);
-    pub const ERROR_COL:  Color = Color::Rgb(220, 70,  70);
-    pub const WARN_COL:   Color = Color::Rgb(220, 180, 60);
-    pub const RULER_COL:  Color = Color::Rgb(45,  50,  65);
+
+    // Surfaces, darkest (canvas) to most elevated (floating popups). Each
+    // step up is a deliberate, small lightness bump so panels read as
+    // physically stacked rather than just "a different gray".
+    pub const BG:           Color = Color::Rgb(16, 18, 24);
+    pub const BG_PANEL:     Color = Color::Rgb(20, 23, 31);
+    /// Slightly elevated above `BG_PANEL`, used for floating popups (hover
+    /// docs, completions, command palette) so they read as "above" the
+    /// panels beneath them.
+    pub const BG_POPUP:     Color = Color::Rgb(27, 31, 42);
+    pub const BG_ACTIVE:    Color = Color::Rgb(30, 35, 47);
+    pub const BG_LINE_HL:   Color = Color::Rgb(24, 28, 38);
+    /// Recessed well behind the integrated terminal — darker than `BG` so
+    /// the shell reads as its own surface, tucked below the editor.
+    pub const BG_TERMINAL:  Color = Color::Rgb(11, 13, 18);
+    /// Darkest surface in the app; anchors the bottom status bar.
+    pub const BG_STATUSBAR: Color = Color::Rgb(12, 14, 19);
+
+    pub const SEL_BG:     Color = Color::Rgb(53,  82,  126);
+    pub const FG:         Color = Color::Rgb(202, 211, 245);
+    /// Reserved for the few things that should visually "pop": the line:col
+    /// counter, bright popup titles, active-tab text.
+    pub const FG_BRIGHT:  Color = Color::Rgb(228, 233, 250);
+    pub const FG_DIM:     Color = Color::Rgb(97,  107, 130);
+    pub const FG_GUTTER:  Color = Color::Rgb(68,  78,  100);
+
+    pub const ACCENT:     Color = Color::Rgb(122, 162, 247);
+    pub const ACCENT2:    Color = Color::Rgb(115, 218, 202);
+    pub const WARN_COL:   Color = Color::Rgb(224, 175, 104);
+    pub const ERROR_COL:  Color = Color::Rgb(240, 113, 120);
+    pub const INFO_COL:   Color = Color::Rgb(158, 177, 240);
+    // Additional hues used to give each editor mode its own distinct,
+    // harmonious badge color in the status bar (see `Ui::mode_badge`).
+    pub const MAGENTA:    Color = Color::Rgb(187, 154, 247);
+    pub const GREEN:      Color = Color::Rgb(158, 206, 106);
+    pub const ORANGE:     Color = Color::Rgb(224, 138, 90);
+    pub const CYAN:       Color = Color::Rgb(94,  195, 214);
+    pub const EMERALD:    Color = Color::Rgb(80,  200, 160);
+    pub const SLATE:      Color = Color::Rgb(42,  47,  61);
+
+    pub const RULER_COL:  Color = Color::Rgb(30, 34, 46);
+    /// Subtle separators between status-bar segments and panel dividers.
+    pub const DIVIDER:    Color = Color::Rgb(40, 45, 58);
+    /// Unfocused panel border — quieter than `FG_DIM` so chrome recedes
+    /// behind text of the same dimness rather than competing with it.
+    pub const BORDER:     Color = Color::Rgb(46, 52, 68);
 }
 
 use colors::*;
@@ -88,12 +124,11 @@ impl Ui {
 
         let body_area: Rect = v_chunks[row]; row += 1;
 
-        // Horizontal layout: [file tree] / editor / [diagnostics]
+        // Horizontal layout: [file tree] / editor
         let h_constraints: Vec<Constraint> = {
             let mut c: Vec<Constraint> = vec![];
             if app.file_tree.is_some() { c.push(Constraint::Length(28)); }
             c.push(Constraint::Min(20));
-            if app.show_diag            { c.push(Constraint::Length(30)); }
             c
         };
 
@@ -114,14 +149,6 @@ impl Ui {
 
         let editor_rect: Rect = h_chunks[col]; col += 1;
         Self::render_editor(frame, app, editor_rect);
-
-        let diag_rect: Option<Rect> = if app.show_diag {
-            let r: Rect = h_chunks[col];
-            Self::render_diagnostics(frame, app, r);
-            Some(r)
-        } else {
-            None
-        };
 
         let terminal_rect: Option<Rect> = if app.show_terminal {
             let r: Rect = v_chunks[row]; row += 1;
@@ -153,14 +180,13 @@ impl Ui {
 
         // Floating overlays: hover doc and completion popup.
         Self::render_hover_overlay(frame, app, area);
-        Self::render_completions_popup(frame, app, area);
+        Self::render_completions_popup(frame, app);
 
         // Store measured layout sizes for the input crate 
         app.layout.screen      = Self::component_size(area);
         app.layout.tabbar      = Self::component_size(tabbar_rect);
         app.layout.editor      = Self::component_size(editor_rect);
         app.layout.file_tree   = file_tree_rect .map(Self::component_size).unwrap_or_default();
-        app.layout.diagnostics = diag_rect      .map(Self::component_size).unwrap_or_default();
         app.layout.terminal    = terminal_rect  .map(Self::component_size).unwrap_or_default();
         app.layout.status_bar  = status_bar_rect.map(Self::component_size).unwrap_or_default();
 
@@ -176,19 +202,30 @@ impl Ui {
     }
 
     /// Draws the top window tab-selection bar.
+    ///
+    /// Each tab's rendered text width must stay in lock-step with
+    /// [`input::tab_index_at_col`]'s layout assumptions (`" " + "● "? + name + " "`)
+    /// — only `Style` (color/modifiers) varies below, never the text content.
     fn render_tabbar(frame: &mut Frame, app: &App, area: Rect) {
         let mut spans: Vec<Span> = vec![];
         for (i, buf) in app.editor.buffers.iter().enumerate() {
             let is_active: bool = i == app.editor.active;
-            let mod_flag: &str  = if buf.modified { "● " } else { "" };
-            let label: String = format!(" {}{} ", mod_flag, buf.name);
-            let style: Style = if is_active {
-                Style::default().fg(Color::White).bg(BG_ACTIVE).add_modifier(Modifier::BOLD)
+
+            let base_style: Style = if is_active {
+                Style::default().fg(FG_BRIGHT).bg(BG_ACTIVE)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+                    .underline_color(ACCENT)
             } else {
                 Style::default().fg(FG_DIM).bg(BG_PANEL)
             };
-            spans.push(Span::styled(label, style));
-            spans.push(Span::styled("│", Style::default().fg(FG_DIM).bg(BG_PANEL)));
+            let dot_style: Style = base_style.fg(WARN_COL);
+
+            spans.push(Span::styled(" ", base_style));
+            if buf.modified {
+                spans.push(Span::styled("● ", dot_style));
+            }
+            spans.push(Span::styled(format!("{} ", buf.name), base_style));
+            spans.push(Span::styled("│", Style::default().fg(DIVIDER).bg(BG_PANEL)));
         }
         let line: Line<'_>   = Line::from(spans);
         let w: Paragraph<'_> = Paragraph::new(line).style(Style::default().bg(BG_PANEL));
@@ -234,6 +271,7 @@ impl Ui {
             let y: u16 = area.top() + screen_row as u16;
             let is_cur: bool = abs_line == cursor_line;
             let line_bg: Color = if is_cur && cfg.highlight_line { BG_LINE_HL } else { BG };
+            let line_diags: Vec<&buffer::Diagnostic> = buf.diags_on_line(abs_line);
 
             // Fill full-width background for the row.
             for x in area.left()..area.right() {
@@ -262,6 +300,15 @@ impl Ui {
                     }
                     gx += 1;
                 }
+
+                // Worst-severity marker in the gutter's trailing column, so
+                // lines with problems are spottable without scanning text.
+                if let Some(color) = Self::worst_diag_color(&line_diags) {
+                    let marker_col: u16 = area.left() + gutter_w - 1;
+                    if let Some(cell) = frame.buffer_mut().cell_mut((marker_col, y)) {
+                        cell.set_char('▎').set_style(Style::default().fg(color).bg(line_bg));
+                    }
+                }
             }
 
             let text_x0: u16 = area.left() + gutter_w;
@@ -269,8 +316,6 @@ impl Ui {
                 .get(screen_row)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
-
-            let line_diags: Vec<&buffer::Diagnostic> = buf.diags_on_line(abs_line);
 
             let mut logical_col: usize = 0;
             'span_loop: for span in spans {
@@ -297,12 +342,14 @@ impl Ui {
                             cell_style = if in_insert {
                                 Style::default().fg(BG).bg(ACCENT2).add_modifier(Modifier::BOLD)
                             } else {
-                                Style::default().fg(BG).bg(Color::White).add_modifier(Modifier::BOLD)
+                                Style::default().fg(BG).bg(FG_BRIGHT).add_modifier(Modifier::BOLD)
                             };
                         }
 
-                        if line_diags.iter().any(|d| d.col == logical_col) {
-                            cell_style = cell_style.add_modifier(Modifier::UNDERLINED);
+                        if let Some(d) = line_diags.iter().find(|d| d.col == logical_col) {
+                            cell_style = cell_style
+                                .add_modifier(Modifier::UNDERLINED)
+                                .underline_color(Self::diag_severity_color(&d.severity));
                         }
 
                         if let Some(cell) = frame.buffer_mut().cell_mut((sx, y)) {
@@ -323,7 +370,7 @@ impl Ui {
                     let curs_style: Style = if in_insert {
                         Style::default().fg(BG).bg(ACCENT2)
                     } else {
-                        Style::default().fg(BG).bg(Color::White)
+                        Style::default().fg(BG).bg(FG_BRIGHT)
                     };
                     if let Some(cell) = frame.buffer_mut().cell_mut((sx, y)) {
                         cell.set_char(' ').set_style(curs_style);
@@ -347,16 +394,25 @@ impl Ui {
     }
 
     /// Draws the filesystem tree sidebar.
+    ///
+    /// Uses a `TOP` border (in addition to the existing `RIGHT` divider) so
+    /// the " Files " title is actually visible above the list — previously
+    /// the block had no top edge, so the list was rendered directly over the
+    /// title row and the input crate's click math (which already assumed a
+    /// header row via `saturating_sub(2)`) silently selected the row above
+    /// whatever was clicked.
     fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         let focused: bool = app.mode == Mode::FileTree;
         let border_style: Style = if focused {
             Style::default().fg(ACCENT)
         } else {
-            Style::default().fg(FG_DIM)
+            Style::default().fg(BORDER)
         };
         let block: Block<'_> = Block::default()
             .title(" Files ")
-            .borders(Borders::RIGHT)
+            .title_style(Style::default().fg(if focused { ACCENT } else { FG_DIM }).add_modifier(Modifier::BOLD))
+            .borders(Borders::TOP | Borders::RIGHT)
+            .border_type(BorderType::Rounded)
             .border_style(border_style)
             .style(Style::default().bg(BG_PANEL));
         let inner: Rect = block.inner(area);
@@ -384,30 +440,35 @@ impl Ui {
             .take(visible_h)
             .map(|(i, (depth, node))| {
                 let is_sel: bool = i == ft.selected;
-
-                let icon: &str = if node.entry.is_dir {
-                    if node.loading       { "⊙ " }
-                    else if node.expanded { "▼ " }
-                    else                  { "▶ " }
-                } else {
-                    "  "
-                };
-
-                let (name_fg, icon_fg) = if node.entry.is_dir {
-                    (ACCENT, ACCENT)
-                } else {
-                    (FG, FG_DIM)
-                };
-
                 let bg: Color = if is_sel { BG_ACTIVE } else { BG_PANEL };
+
+                let (icon, icon_fg): (&str, Color) = if node.entry.is_dir {
+                    let glyph: &str = if node.loading       { "⊙ " }
+                                       else if node.expanded { "▼ " }
+                                       else                  { "▶ " };
+                    (glyph, ACCENT)
+                } else {
+                    Self::file_glyph(&node.entry.name)
+                };
+
+                let name_fg: Color = if node.entry.is_dir { ACCENT } else { FG };
                 let name_style: Style = if is_sel {
-                    Style::default().fg(Color::White).bg(bg).add_modifier(Modifier::BOLD)
+                    Style::default().fg(FG_BRIGHT).bg(bg).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(name_fg).bg(bg)
                 };
 
+                // Left accent bar echoes the selected-row convention from the
+                // editor gutter, so the highlighted entry is unmistakable
+                // even before reading its text.
+                let sel_bar: &str = if is_sel { "▎" } else { " " };
+                let sel_bar_style: Style = Style::default()
+                    .fg(if is_sel { ACCENT } else { bg })
+                    .bg(bg);
+
                 let indent: String = "  ".repeat(*depth);
                 Line::from(vec![
+                    Span::styled(sel_bar,                   sel_bar_style),
                     Span::styled(indent,                    Style::default().bg(bg)),
                     Span::styled(icon,  Style::default().fg(icon_fg).bg(bg)),
                     Span::styled(node.entry.name.as_str(), name_style),
@@ -418,37 +479,16 @@ impl Ui {
 
         let list: List<'_> = List::new(items).style(Style::default().bg(BG_PANEL));
         frame.render_widget(list, inner);
-    }
 
-    /// Renders the diagnostics sidebar (errors / warnings from the LSP).
-    fn render_diagnostics(frame: &mut Frame, app: &App, area: Rect) {
-        let block: Block<'_> = Block::default()
-            .title(" Diagnostics ")
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(FG_DIM))
-            .style(Style::default().bg(BG_PANEL));
-        let inner: Rect = block.inner(area);
-        frame.render_widget(block, area);
-
-        let buf: &buffer::Buffer = app.editor.buf();
-        let items: Vec<ListItem> = buf.diagnostics.iter().map(|d| {
-            let (icon, col): (&str, Color) = match d.severity {
-                DiagSeverity::Error   => ("✖", ERROR_COL),
-                DiagSeverity::Warning => ("⚠", WARN_COL),
-                DiagSeverity::Info    => ("ℹ", ACCENT),
-                DiagSeverity::Hint    => ("·", FG_DIM),
-            };
-            let label: String = format!("{} {}:{} {}", icon, d.line + 1, d.col + 1, d.message);
-            ListItem::new(label).style(Style::default().fg(col))
-        }).collect();
-
-        if items.is_empty() {
-            let p: Paragraph<'_> = Paragraph::new("No diagnostics")
-                .style(Style::default().fg(FG_DIM));
-            frame.render_widget(p, inner);
-        } else {
-            let list: List<'_> = List::new(items).style(Style::default().bg(BG_PANEL));
-            frame.render_widget(list, inner);
+        if total > visible_h {
+            let sb_rect = Rect { x: area.right().saturating_sub(1), y: inner.y, width: 1, height: inner.height };
+            let mut sb_state = ScrollbarState::new(total).position(scroll_top);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(Style::default().fg(DIVIDER).bg(BG_PANEL))
+                .thumb_style(Style::default().fg(ACCENT));
+            frame.render_stateful_widget(scrollbar, sb_rect, &mut sb_state);
         }
     }
 
@@ -462,13 +502,15 @@ impl Ui {
         let border_style: Style = if focused {
             Style::default().fg(ACCENT)
         } else {
-            Style::default().fg(FG_DIM)
+            Style::default().fg(BORDER)
         };
         let block: Block<'_> = Block::default()
             .title(" Terminal ")
+            .title_style(Style::default().fg(if focused { ACCENT } else { FG_DIM }).add_modifier(Modifier::BOLD))
             .borders(Borders::TOP)
+            .border_type(BorderType::Rounded)
             .border_style(border_style)
-            .style(Style::default().bg(Color::Rgb(18, 20, 28)));
+            .style(Style::default().bg(BG_TERMINAL));
         let inner: Rect = block.inner(area);
         frame.render_widget(block, area);
 
@@ -493,19 +535,23 @@ impl Ui {
     fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         let buf: &buffer::Buffer = app.editor.buf();
 
+        // Every mode gets its own hue from the shared palette so the badge
+        // reads as one coherent system rather than arbitrary bright colors;
+        // `Terminal` alone uses a neutral slate + bright text since it's a
+        // "you're outside the editor" state, not an editing mode.
         let (mode_str, mode_fg, mode_bg): (&str, Color, Color) = match &app.mode {
-            Mode::Normal         => (" NORMAL  ", Color::Black, ACCENT),
-            Mode::Insert         => (" INSERT  ", Color::Black, ACCENT2),
-            Mode::Command        => (" COMMAND ", Color::Black, Color::Rgb(220, 180, 60)),
-            Mode::Search         => (" SEARCH  ", Color::Black, Color::Rgb(200, 100, 200)),
-            Mode::GotoLine       => (" GOTO    ", Color::Black, Color::Rgb(220, 130, 60)),
-            Mode::CommandPalette => (" PALETTE ", Color::Black, Color::Rgb(100, 180, 220)),
-            Mode::FileTree       => (" TREE    ", Color::Black, Color::Rgb(160, 200, 100)),
-            Mode::SaveAs         => (" SAVE AS ", Color::Black, Color::Rgb(80,  200, 160)),
-            Mode::Terminal       => (" TERMINAL", Color::White, Color::Rgb(50,  55,  70)),
+            Mode::Normal         => (" NORMAL  ", BG, ACCENT),
+            Mode::Insert         => (" INSERT  ", BG, ACCENT2),
+            Mode::Command        => (" COMMAND ", BG, WARN_COL),
+            Mode::Search         => (" SEARCH  ", BG, MAGENTA),
+            Mode::GotoLine       => (" GOTO    ", BG, ORANGE),
+            Mode::CommandPalette => (" PALETTE ", BG, CYAN),
+            Mode::FileTree       => (" TREE    ", BG, GREEN),
+            Mode::SaveAs         => (" SAVE AS ", BG, EMERALD),
+            Mode::Terminal       => (" TERMINAL", FG_BRIGHT, SLATE),
         };
 
-        let bar_bg: Color = Color::Rgb(22, 25, 34);
+        let bar_bg: Color = BG_STATUSBAR;
 
         for x in area.left()..area.right() {
             if let Some(cell) = frame.buffer_mut().cell_mut((x, area.top())) {
@@ -538,8 +584,18 @@ impl Ui {
         }
 
         if let Some(msg) = &app.message {
-            let s: String        = format!("   {}", msg);
-            let msg_style: Style = Style::default().fg(WARN_COL).bg(bar_bg);
+            let div: String      = "  │ ".to_string();
+            let div_style: Style = Style::default().fg(DIVIDER).bg(bar_bg);
+            for ch in div.chars() {
+                if x >= area.right() { break; }
+                if let Some(cell) = frame.buffer_mut().cell_mut((x, area.top())) {
+                    cell.set_char(ch).set_style(div_style);
+                }
+                x += 1;
+            }
+
+            let s: String         = format!("▸ {}", msg);
+            let msg_style: Style  = Style::default().fg(WARN_COL).bg(bar_bg);
             for ch in s.chars() {
                 if x >= area.right() { break; }
                 if let Some(cell) = frame.buffer_mut().cell_mut((x, area.top())) {
@@ -553,23 +609,37 @@ impl Ui {
         let ext_disp: String = if ext.is_empty() { "text".to_string() } else { ext };
         let can_u: &str      = if buf.can_undo() { "U" } else { "-" };
         let can_r: &str      = if buf.can_redo() { "R" } else { "-" };
-        let pos_str: String  = format!(
-            " {} {}  {}/{}  {}:{} ",
-            ext_disp,
-            format!("[{}{}]", can_u, can_r),
-            app.editor.active + 1,
-            app.editor.buffers.len(),
-            buf.cursor.line + 1,
-            buf.cursor.col  + 1,
-        );
-        let pos_start: u16   = area.right().saturating_sub(pos_str.len() as u16);
-        let pos_style: Style = Style::default().fg(FG_DIM).bg(bar_bg);
-        for (i, ch) in pos_str.chars().enumerate() {
-            let px: u16 = pos_start + i as u16;
-            if px < area.right() {
-                if let Some(cell) = frame.buffer_mut().cell_mut((px, area.top())) {
-                    cell.set_char(ch).set_style(pos_style);
+        let lsp_on: bool     = app.lsp_available();
+
+        let div_style: Style  = Style::default().fg(DIVIDER).bg(bar_bg);
+        let dim_style: Style  = Style::default().fg(FG_DIM).bg(bar_bg);
+        let lsp_style: Style  = Style::default()
+            .fg(if lsp_on { ACCENT2 } else { FG_DIM })
+            .bg(bar_bg);
+
+        // Right-aligned cluster: LSP indicator │ ext │ undo/redo │ tab N/M │ line:col
+        let segments: [(String, Style); 9] = [
+            (format!(" {} LSP ", if lsp_on { "●" } else { "○" }), lsp_style),
+            ("│ ".into(),                                          div_style),
+            (format!("{} ", ext_disp),                             dim_style),
+            ("│ ".into(),                                          div_style),
+            (format!("[{can_u}{can_r}] "),                         dim_style),
+            ("│ ".into(),                                          div_style),
+            (format!("{}/{} ", app.editor.active + 1, app.editor.buffers.len()), dim_style),
+            ("│ ".into(),                                          div_style),
+            (format!("{}:{} ", buf.cursor.line + 1, buf.cursor.col + 1), Style::default().fg(FG_BRIGHT).bg(bar_bg).add_modifier(Modifier::BOLD)),
+        ];
+
+        let total_w: u16   = segments.iter().map(|(s, _)| s.chars().count() as u16).sum();
+        let mut px: u16    = area.right().saturating_sub(total_w);
+        for (seg, style) in &segments {
+            for ch in seg.chars() {
+                if px < area.right() {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((px, area.top())) {
+                        cell.set_char(ch).set_style(*style);
+                    }
                 }
+                px += 1;
             }
         }
     }
@@ -577,10 +647,10 @@ impl Ui {
     /// Renders the transient command / search / goto-line / save-as prompt overlay.
     fn render_prompt(frame: &mut Frame, app: &App, area: Rect) {
         let (prefix, prompt_bg): (&str, Color) = match app.mode {
-            Mode::Search   => ("/  ",       Color::Rgb(60, 30, 70)),
-            Mode::GotoLine => (": ",        Color::Rgb(40, 50, 70)),
-            Mode::Command  => (": ",        Color::Rgb(40, 50, 70)),
-            Mode::SaveAs   => ("Save As: ", Color::Rgb(20, 60, 50)),
+            Mode::Search   => ("/  ",       Color::Rgb(38, 26, 48)),
+            Mode::GotoLine => (": ",        Color::Rgb(22, 30, 46)),
+            Mode::Command  => (": ",        Color::Rgb(22, 30, 46)),
+            Mode::SaveAs   => ("Save As: ", Color::Rgb(15, 38, 34)),
             _ => return,
         };
         let h: u16  = area.bottom().saturating_sub(1);
@@ -588,7 +658,7 @@ impl Ui {
         frame.render_widget(Clear, r);
 
         let text: String = format!("{}{}", prefix, app.prompt_input);
-        let style: Style = Style::default().fg(Color::White).bg(prompt_bg);
+        let style: Style = Style::default().fg(FG_BRIGHT).bg(prompt_bg);
         for (i, ch) in text.chars().enumerate() {
             if let Some(cell) = frame.buffer_mut().cell_mut((r.left() + i as u16, r.top())) {
                 cell.set_char(ch).set_style(style);
@@ -601,6 +671,47 @@ impl Ui {
     #[inline]
     fn component_size(r: Rect) -> ComponentSize {
         ComponentSize { width: r.width, height: r.height }
+    }
+
+    /// Maps a diagnostic severity onto its display color, shared by the
+    /// inline underline and the gutter marker so the two always agree.
+    fn diag_severity_color(sev: &DiagSeverity) -> Color {
+        match sev {
+            DiagSeverity::Error   => ERROR_COL,
+            DiagSeverity::Warning => WARN_COL,
+            DiagSeverity::Info    => INFO_COL,
+            DiagSeverity::Hint    => FG_DIM,
+        }
+    }
+
+    /// Returns the color for the most severe diagnostic on a line, if any,
+    /// for the gutter marker (`Error` > `Warning` > `Info` > `Hint`).
+    fn worst_diag_color(diags: &[&buffer::Diagnostic]) -> Option<Color> {
+        diags.iter()
+            .map(|d| &d.severity)
+            .min_by_key(|sev| match sev {
+                DiagSeverity::Error   => 0,
+                DiagSeverity::Warning => 1,
+                DiagSeverity::Info    => 2,
+                DiagSeverity::Hint    => 3,
+            })
+            .map(Self::diag_severity_color)
+    }
+
+    /// Maps a file-tree entry's name onto a small colored glyph, giving the
+    /// panel a lightweight "file type at a glance" cue without needing a
+    /// Nerd Font — every symbol here is plain Unicode.
+    fn file_glyph(name: &str) -> (&'static str, Color) {
+        let ext: String = name.rsplit('.').next().unwrap_or("").to_lowercase();
+        match ext.as_str() {
+            "rs"                                                          => ("● ", ORANGE),
+            "toml" | "yaml" | "yml" | "ini" | "cfg" | "lock"               => ("● ", FG_DIM),
+            "json"                                                        => ("● ", WARN_COL),
+            "md" | "txt" | "rst"                                          => ("● ", INFO_COL),
+            "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "c" | "cpp" | "h"
+                | "hpp" | "lua" | "sh" | "rb" | "java"                    => ("● ", ACCENT),
+            _                                                             => ("· ", FG_DIM),
+        }
     }
 
     /// Returns the cursor's screen `(x, y)` position within the full terminal area.
@@ -631,12 +742,15 @@ impl Ui {
             return;
         }
 
+        const MAX_LINES: usize = 14;
         let (cx, cy) = Self::cursor_screen_pos(app);
 
-        let lines: Vec<&str> = app.hover.content.lines().take(10).collect();
+        let total_lines: usize = app.hover.content.lines().count();
+        let lines: Vec<&str>   = app.hover.content.lines().take(MAX_LINES).collect();
         if lines.is_empty() { return; }
+        let truncated: bool = total_lines > MAX_LINES;
 
-        let popup_h: u16 = lines.len() as u16 + 2;
+        let popup_h: u16 = lines.len() as u16 + if truncated { 1 } else { 0 } + 2;
         let popup_w: u16 = lines.iter()
             .map(|l| l.len() as u16)
             .max()
@@ -663,32 +777,66 @@ impl Ui {
 
         frame.render_widget(Clear, popup_rect);
 
-        let text: Vec<Line> = lines.iter()
+        let mut text: Vec<Line> = lines.iter()
             .map(|l| Line::from(Span::styled(*l, Style::default().fg(FG))))
             .collect();
+        if truncated {
+            let more: usize = total_lines - MAX_LINES;
+            text.push(Line::from(Span::styled(
+                format!("… {more} more line{}", if more == 1 { "" } else { "s" }),
+                Style::default().fg(FG_DIM).add_modifier(Modifier::ITALIC),
+            )));
+        }
 
         let p = Paragraph::new(text)
             .block(Block::default()
+                .title(" Docs ")
+                .title_style(Style::default().fg(INFO_COL).add_modifier(Modifier::BOLD))
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(FG_DIM))
-                .style(Style::default().bg(BG_PANEL)));
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(INFO_COL))
+                .style(Style::default().bg(BG_POPUP)));
         frame.render_widget(p, popup_rect);
+    }
+
+    /// Maps an LSP completion-kind badge (e.g. `"fn"`, `"var"`, `"kw"`) onto a
+    /// distinguishing accent color; unrecognized/empty badges fall back to
+    /// [`FG_DIM`]. See `completion_kind_label` in the `lsp` crate for the
+    /// full set of short codes this matches.
+    fn completion_kind_color(kind: &str) -> Color {
+        match kind {
+            "fn" | "mth" | "ctor"                    => ACCENT,
+            "var" | "fld" | "prop" | "val"            => ACCENT2,
+            "kw" | "op"                                => WARN_COL,
+            "cls" | "ifc" | "struct" | "enum" | "tp"  => INFO_COL,
+            "const" | "em"                             => WARN_COL,
+            _                                           => FG_DIM,
+        }
     }
 
     /// Renders the LSP completion popup.
     ///
-    /// Shows up to 8 items in a floating list below (or above) the cursor.
-    /// The selected row is highlighted with [`BG_ACTIVE`].  A short kind badge
-    /// (e.g. `fn`, `var`, `kw`) is shown on the right when available.
-    fn render_completions_popup(frame: &mut Frame, app: &App, area: Rect) {
+    /// Shows up to 8 items at a time in a floating list below (or above) the
+    /// cursor, scrolling to keep the selected item in view when there are
+    /// more. A short, color-coded kind badge (e.g. `fn`, `var`, `kw`) is
+    /// shown on the right when available.
+    ///
+    /// Records the popup's on-screen rect and visible window into
+    /// `app.completions` every frame so the `input` crate can hit-test mouse
+    /// clicks/scrolls against it (see `InsertHandler::handle_mouse`).
+    fn render_completions_popup(frame: &mut Frame, app: &mut App) {
         if !app.completions.visible || app.completions.items.is_empty() {
+            app.completions.popup_rect = None;
             return;
         }
+        let area: Rect = frame.area();
 
         let (cx, cy) = Self::cursor_screen_pos(app);
 
         const MAX_VISIBLE: usize = 8;
-        let item_count: usize = app.completions.items.len().min(MAX_VISIBLE);
+        let total: usize      = app.completions.items.len();
+        let selected: usize   = app.completions.selected;
+        let item_count: usize = total.min(MAX_VISIBLE);
         let popup_h: u16      = item_count as u16 + 2; // +2 for border
         let popup_w: u16      = 38_u16.min(area.width / 2).max(20);
 
@@ -700,46 +848,69 @@ impl Ui {
         let x: u16 = cx.min(area.right().saturating_sub(popup_w));
 
         if popup_h == 0 || popup_w == 0 || y >= area.bottom() || x >= area.right() {
+            app.completions.popup_rect = None;
             return;
         }
 
         let popup_rect = Rect { x, y, width: popup_w, height: popup_h };
+        app.completions.popup_rect = Some(app::PopupRect {
+            x: popup_rect.x, y: popup_rect.y, width: popup_rect.width, height: popup_rect.height,
+        });
+
         frame.render_widget(Clear, popup_rect);
 
+        let title: String = format!(" {}/{} ", selected + 1, total);
         let block: Block<'_> = Block::default()
+            .title(title)
+            .title_style(Style::default().fg(FG_DIM))
+            .title_alignment(ratatui::layout::Alignment::Right)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(ACCENT))
-            .style(Style::default().bg(BG_PANEL));
+            .style(Style::default().bg(BG_POPUP));
         let inner = block.inner(popup_rect);
         frame.render_widget(block, popup_rect);
 
-        let inner_w = inner.width as usize;
-        let selected = app.completions.selected;
+        // Keep `selected` inside the visible window, scrolling as needed.
+        let max_start: usize = total.saturating_sub(MAX_VISIBLE);
+        let start: usize     = selected.saturating_sub(MAX_VISIBLE.saturating_sub(1)).min(max_start);
+        app.completions.visible_start = start;
 
-        let items: Vec<ListItem> = app.completions.items.iter().take(MAX_VISIBLE).enumerate()
+        let has_scrollbar: bool = total > MAX_VISIBLE;
+        let inner_w: usize = inner.width.saturating_sub(if has_scrollbar { 1 } else { 0 }) as usize;
+
+        let items: Vec<ListItem> = app.completions.items.iter()
+            .enumerate()
+            .skip(start)
+            .take(MAX_VISIBLE)
             .map(|(i, item)| {
                 let is_sel: bool = i == selected;
-                let bg: Color = if is_sel { BG_ACTIVE } else { BG_PANEL };
-                let fg: Color = if is_sel { Color::White } else { FG };
+                let bg: Color = if is_sel { BG_ACTIVE } else { BG_POPUP };
+                let fg: Color = if is_sel { FG_BRIGHT } else { FG };
                 let style: Style = Style::default().fg(fg).bg(bg);
+                let marker: &str = if is_sel { "▎" } else { " " };
 
-                // Compose label + right-aligned kind badge.
+                // Compose marker + label + right-aligned, color-coded kind badge.
                 let badge: &str = item.kind_label.as_deref().unwrap_or("");
                 let label: &String = &item.label;
 
-                let content: String = if badge.is_empty() {
-                    format!(" {:<width$}", label, width = inner_w.saturating_sub(1))
+                let (label_text, badge_str): (String, String) = if badge.is_empty() {
+                    (format!("{:<width$}", label, width = inner_w.saturating_sub(1)), String::new())
                 } else {
                     let badge_str: String = format!("[{}]", badge);
                     let label_w: usize = inner_w.saturating_sub(badge_str.len() + 2);
-                    format!(" {:<label_w$}{}", label, badge_str, label_w = label_w)
+                    (format!("{:<label_w$}", label, label_w = label_w), badge_str)
                 };
 
-                let spans: Vec<Span<'_>> = if is_sel {
-                    vec![Span::styled(content, style.add_modifier(Modifier::BOLD))]
-                } else {
-                    vec![Span::styled(content, style)]
-                };
+                let label_style: Style = if is_sel { style.add_modifier(Modifier::BOLD) } else { style };
+                let mut spans: Vec<Span<'_>> = vec![
+                    Span::styled(marker, Style::default().fg(ACCENT).bg(bg)),
+                    Span::styled(label_text, label_style),
+                ];
+                if !badge_str.is_empty() {
+                    let badge_fg: Color = if is_sel { FG_BRIGHT } else { Self::completion_kind_color(badge) };
+                    spans.push(Span::styled(badge_str, Style::default().fg(badge_fg).bg(bg)));
+                }
 
                 ListItem::new(Line::from(spans))
             })
@@ -747,5 +918,16 @@ impl Ui {
 
         let list = List::new(items);
         frame.render_widget(list, inner);
+
+        if has_scrollbar {
+            let sb_rect = Rect { x: inner.right(), y: inner.y, width: 1, height: inner.height };
+            let mut sb_state = ScrollbarState::new(total).position(selected);
+            let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None)
+                .track_style(Style::default().fg(DIVIDER).bg(BG_POPUP))
+                .thumb_style(Style::default().fg(ACCENT));
+            frame.render_stateful_widget(scrollbar, sb_rect, &mut sb_state);
+        }
     }
 }

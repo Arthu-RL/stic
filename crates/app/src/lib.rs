@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use command_palette::CommandPalette;
+use command_palette::{CommandPalette};
 use config::Config;
 use editor::Editor;
 use lsp::{LspAction, LspEvent, LspManager};
@@ -63,6 +63,24 @@ impl ComponentSize {
     }
 }
 
+/// Absolute on-screen rectangle of a floating popup, recorded by the `ui`
+/// crate on every frame it is drawn so the `input` crate can hit-test mouse
+/// events against it without depending on ratatui itself.
+#[derive(Debug, Clone, Copy)]
+pub struct PopupRect {
+    pub x:      u16,
+    pub y:      u16,
+    pub width:  u16,
+    pub height: u16,
+}
+
+impl PopupRect {
+    /// Whether the given absolute terminal column/row falls inside this rect.
+    pub fn contains(&self, col: u16, row: u16) -> bool {
+        col >= self.x && col < self.x + self.width && row >= self.y && row < self.y + self.height
+    }
+}
+
 /// Cached terminal layout dimensions written by the `ui` crate on every
 /// render frame and read by the `input` crate to drive scroll-sensitive
 /// operations.
@@ -80,8 +98,6 @@ pub struct LayoutSizes {
     pub editor:           ComponentSize,
     /// File-tree side panel; zero dimensions when the panel is hidden.
     pub file_tree:        ComponentSize,
-    /// Diagnostics side panel; zero dimensions when the panel is hidden.
-    pub diagnostics:      ComponentSize,
     /// Integrated terminal panel; zero dimensions when the panel is hidden.
     pub terminal:         ComponentSize,
     /// Status bar row; zero dimensions when the bar is hidden.
@@ -447,6 +463,12 @@ pub struct CompletionState {
     pub trigger_col:  usize,
     /// Buffer line at which the completion was requested.
     pub trigger_line: usize,
+    /// On-screen rect of the popup as last rendered; `None` while hidden.
+    /// Lets the input crate hit-test mouse clicks/scrolls against it.
+    pub popup_rect:    Option<PopupRect>,
+    /// Index of the first item shown in the popup as last rendered — the
+    /// visible window scrolls to keep `selected` in view.
+    pub visible_start: usize,
 }
 
 
@@ -474,10 +496,9 @@ pub struct App {
     /// Whether the integrated terminal panel is visible.
     pub show_terminal:   bool,
     /// The running PTY-backed shell session; `None` until first opened via
-    /// [`App::toggle_terminal`], and killed when the panel is closed.
+    /// [`App::toggle_terminal`]. The session survives hiding the panel and
+    /// is only terminated by [`App::kill_terminal`] or the shell exiting.
     pub terminal:        Option<terminal::PtySession>,
-    /// Whether the diagnostics panel is visible.
-    pub show_diag:       bool,
     /// In-process clipboard for copy/paste operations.
     pub clipboard:       String,
     /// Hover-documentation overlay rendered above the cursor.
@@ -507,7 +528,6 @@ impl App {
         let editor: Editor = Editor::new(config.clone());
         let show_ft: bool = config.ui.show_file_tree;
         let show_term: bool = config.ui.show_terminal;
-        let show_diag: bool = config.ui.show_diagnostics;
         let working_dir: PathBuf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
         let file_tree: Option<FileTreeState> = if show_ft {
@@ -537,17 +557,22 @@ impl App {
             file_tree,
             show_terminal:   show_term,
             terminal:        None,
-            show_diag,
             clipboard:       String::new(),
             hover:           HoverOverlay::default(),
             completions:     CompletionState::default(),
             lsp,
             layout:          LayoutSizes::default(),
-            working_dir  
+            working_dir,
         }
     }
 
     /// Posts a transient status-bar message that auto-clears after sixty ticks.
+    ///
+    /// Reserved for the few messages a user directly needs to see (action
+    /// confirmations, prompts, and errors that block what they were doing).
+    /// Anything more chatty — background LSP lifecycle events, request
+    /// tracing, and other debug detail — belongs in `log::debug!`/`info!`
+    /// instead, which lands in `/tmp/stic.log` rather than the status bar.
     ///
     /// # Arguments
     ///
@@ -593,7 +618,6 @@ impl App {
             match event {
                 // Server finished initialising – open the currently active file.
                 LspEvent::Ready { ext } => {
-                    self.set_message(format!("LSP ready (.{ext})"));
                     let path: Option<PathBuf>    = self.editor.buf().path.clone();
                     let text: String    = self.editor.buf().text();
                     let version: i32 = self.editor.buf().version;
@@ -603,7 +627,7 @@ impl App {
                 }
 
                 // Diagnostics from the server – attach to the active buffer.
-                LspEvent::Diagnostics { uri: _, items } => {
+                LspEvent::Diagnostics { uri, items } => {
                     let buf: &mut buffer::Buffer = self.editor.buf_mut();
                     buf.diagnostics = items
                         .into_iter()
@@ -638,14 +662,10 @@ impl App {
                         self.completions.items    = items;
                         self.completions.selected = 0;
                         self.completions.visible  = true;
-                    } else {
-                        self.set_message("LSP: no completions at cursor");
                     }
                 }
 
-                LspEvent::Error(e) => {
-                    self.set_message(format!("LSP: {e}"));
-                }
+                LspEvent::Error(e) => {}
             }
         }
     }
@@ -721,7 +741,9 @@ impl App {
                 }
                 self.set_message(format!("Saved {name}"));
             }
-            Err(e) => self.set_message(format!("Save error: {e}")),
+            Err(e) => {
+                self.set_message(format!("Save error: {e}"));
+            }
         }
     }
 
@@ -762,7 +784,9 @@ impl App {
                 }
                 self.set_message(format!("Saved {name}"));
             }
-            Err(e) => self.set_message(format!("Save As error: {e}")),
+            Err(e) => {
+                self.set_message(format!("Save As error: {e}"));
+            }
         }
     }
 
@@ -789,7 +813,7 @@ impl App {
             "delete_line"      => { self.editor.buf_mut().delete_line();     self.mode = Mode::Normal; }
             "toggle_file_tree" => { self.toggle_file_tree(); }
             "toggle_terminal"  => { self.toggle_terminal(); }
-            "toggle_diag"      => { self.show_diag = !self.show_diag;        self.mode = Mode::Normal; }
+            "close_terminal"   => { self.kill_terminal(); }
             "next_tab"         => { self.editor.next_tab();                  self.mode = Mode::Normal; }
             "prev_tab"         => { self.editor.prev_tab();                  self.mode = Mode::Normal; }
             "open_config"      => { self.open_config();                      self.mode = Mode::Normal; }
@@ -805,6 +829,14 @@ impl App {
 
             _ => { self.mode = Mode::Normal; }
         }
+    }
+
+    /// Whether a language server is configured for the active buffer's file
+    /// extension, regardless of whether its session has spawned yet. Drives
+    /// the LSP status indicator in the status bar.
+    pub fn lsp_available(&self) -> bool {
+        let ext: String = self.editor.active_extension();
+        self.lsp.as_ref().is_some_and(|l| l.has_server(&ext))
     }
 
     /// Sends an LSP hover request for the symbol at the current cursor position.
@@ -865,7 +897,6 @@ impl App {
         match (path, &mut self.lsp) {
             (Some(path), Some(lsp)) => {
                 lsp.send(&ext, LspAction::Complete { path, line, col });
-                self.set_message("LSP: requesting completions…");
             }
             _ => self.set_message("LSP: no server for this file type"),
         }
@@ -900,6 +931,28 @@ impl App {
         self.completions.visible = false;
         self.completions.items.clear();
         self.completions.selected = 0;
+        self.completions.popup_rect = None;
+        self.completions.visible_start = 0;
+    }
+
+    /// Returns the completion item index under the given absolute terminal
+    /// coordinates, if any — used to accept a suggestion via mouse click.
+    /// Coordinates outside the popup, or over its border, return `None`.
+    pub fn completion_item_at(&self, col: u16, row: u16) -> Option<usize> {
+        let rect = self.completions.popup_rect?;
+        if !rect.contains(col, row) { return None; }
+        let inner_top: u16    = rect.y + 1;
+        let inner_bottom: u16 = rect.y + rect.height.saturating_sub(1);
+        if row < inner_top || row >= inner_bottom { return None; }
+        let idx: usize = self.completions.visible_start + (row - inner_top) as usize;
+        if idx < self.completions.items.len() { Some(idx) } else { None }
+    }
+
+    /// Whether the given absolute terminal coordinates fall inside the
+    /// currently visible completion popup.
+    pub fn point_in_completions_popup(&self, col: u16, row: u16) -> bool {
+        self.completions.visible
+            && self.completions.popup_rect.is_some_and(|r| r.contains(col, row))
     }
 
     /// Moves the completion selection one row up (wraps at the top).
@@ -986,16 +1039,19 @@ impl App {
         self.mode = Mode::Normal;
     }
 
-    /// Opens (spawning the shell lazily on first use) or closes the
+    /// Opens (spawning the shell lazily on first use) or hides the
     /// integrated terminal panel, and focuses it for keyboard input.
     ///
-    /// Pressed while the terminal is already focused, this closes the panel
-    /// and kills the shell process. Pressed while hidden, it spawns a shell
-    /// rooted at [`App::working_dir`] (reusing one already running in the
-    /// background) and switches to [`Mode::Terminal`].
+    /// Pressed while the terminal is already focused, this **hides** the
+    /// panel but keeps the shell session alive in the background — its
+    /// scrollback, working directory, and any running command are preserved
+    /// and restored the next time the panel is opened. Pressed while hidden,
+    /// it spawns a shell rooted at [`App::working_dir`] (reusing one already
+    /// running in the background) and switches to [`Mode::Terminal`].
+    ///
+    /// Use [`App::kill_terminal`] to actually terminate the shell.
     pub fn toggle_terminal(&mut self) {
         if self.mode == Mode::Terminal {
-            self.terminal      = None;
             self.show_terminal = false;
             self.mode          = Mode::Normal;
             return;
@@ -1024,6 +1080,22 @@ impl App {
     /// keep executing in the background while the user edits.
     pub fn unfocus_terminal(&mut self) {
         self.mode = Mode::Normal;
+    }
+
+    /// Terminates the shell session and closes the terminal panel.
+    ///
+    /// This is the explicit "end my shell" action (`Ctrl+Shift+T` or the
+    /// *Close Terminal Session* palette command), as opposed to
+    /// [`App::toggle_terminal`] which only hides the panel while keeping the
+    /// session running in the background.
+    pub fn kill_terminal(&mut self) {
+        if self.terminal.take().is_some() {
+            self.set_message("Terminal: session closed");
+        }
+        self.show_terminal = false;
+        if self.mode == Mode::Terminal {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// Forwards raw input bytes to the running shell, if any.
@@ -1058,7 +1130,9 @@ impl App {
                 let _ = self.editor.open_file(&path);
                 self.set_message(format!("Config at {}", path.display()));
             }
-            Err(e) => self.set_message(format!("Config error: {e}")),
+            Err(e) => {
+                self.set_message(format!("Config error: {e}"));
+            }
         }
     }
 

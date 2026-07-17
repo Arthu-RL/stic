@@ -69,8 +69,6 @@ pub struct UiConfig {
     pub show_file_tree:   bool,
     /// Integrated terminal panel visible by default.
     pub show_terminal:    bool,
-    /// Diagnostic (errors/warnings) panel visible by default.
-    pub show_diagnostics: bool,
 }
 
 
@@ -84,7 +82,9 @@ pub struct KeybindingsConfig {
     pub command_palette:  String,
     pub toggle_file_tree: String,
     pub toggle_terminal:  String,
-    pub toggle_diag:      String,
+    /// Terminate the integrated terminal's shell session (panel hide is
+    /// `toggle_terminal`, which keeps the session running).
+    pub close_terminal:   String,
     pub find:             String,
     pub find_next:        String,
     pub find_prev:        String,
@@ -177,7 +177,6 @@ impl Default for UiConfig {
             show_status_bar: true,
             show_file_tree: false,
             show_terminal: false,
-            show_diagnostics: false,
         }
     }
 }
@@ -197,7 +196,7 @@ impl Default for KeybindingsConfig {
             command_palette:  "ctrl+p".into(),
             toggle_file_tree: "ctrl+b".into(),
             toggle_terminal:  "ctrl+t".into(),
-            toggle_diag:      "ctrl+d".into(),
+            close_terminal:   "ctrl+shift+t".into(),
             find:             "ctrl+f".into(),
             find_next:        "F3".into(),
             find_prev:        "shift+F3".into(),
@@ -312,11 +311,10 @@ highlight_line   = true
 ruler_column     = 80
 
 [ui]
-theme            = "base16-eighties.dark"
+theme            = "Monokai"
 show_status_bar  = true
 show_file_tree   = false
 show_terminal    = false
-show_diagnostics = true
 
 [keybindings]
 # Editor
@@ -335,8 +333,8 @@ go_to_line       = "ctrl+g"
 # UI panels
 command_palette  = "ctrl+p"
 toggle_file_tree = "ctrl+b"
-toggle_terminal  = "ctrl+t"
-toggle_diag      = "ctrl+d"
+toggle_terminal  = "ctrl+t"       # hides the panel, shell keeps running
+close_terminal   = "ctrl+shift+t" # terminates the shell session
 # LSP
 completions      = "ctrl+space"   # Insert mode – open completion popup
 hover_doc        = "ctrl+k"       # Normal mode – show hover documentation

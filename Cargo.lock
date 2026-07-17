@@ -88,6 +88,7 @@ dependencies = [
  "command_palette",
  "config",
  "editor",
+ "log",
  "lsp",
  "terminal",
  "tokio",
